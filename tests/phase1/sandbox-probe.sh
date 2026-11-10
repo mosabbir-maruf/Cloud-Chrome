@@ -195,7 +195,7 @@ Xtigervnc -version 2>&1 | head -5
 printf '\n--- packaged man page locations ---\n'
 dpkg -L tigervnc-standalone-server 2>/dev/null | grep -i 'man' | head -10 || echo "<none listed>"
 printf '\n--- packaged -rfbauth documentation ---\n'
-manpage=$(dpkg -L tigervnc-standalone-server 2>/dev/null | grep -E 'man1/.*\.gz$' | head -1)
+manpage=$(dpkg -L tigervnc-standalone-server 2>/dev/null | grep -E 'man1/Xtigervnc\.1\.gz$' | head -1)
 if [ -n "$manpage" ] && [ -r "$manpage" ]; then
   echo "reading $manpage"
   gzip -dc "$manpage" 2>/dev/null | grep -B2 -A8 -i 'rfbauth' | head -30
@@ -214,15 +214,26 @@ PASSFILE="$WORK/passwd"
 # the file and applies mode 0600. It reads the password from the terminal, so
 # a pty is provided when stdin is not one.
 make_password_file() { # $1 = password, $2 = target file
-  local pw="$1" out="$2"
+  # TigerVNC stores an 8-byte obfuscated key. tigervncpasswd reads the password
+  # from the terminal, so a pty is used when one is available. The file is
+  # created by tigervncpasswd itself (so it owns the file and applies mode
+  # 0600); the -f form is used as a fallback and truncated to the 8-byte key.
+  local pw="$1" out="$2" raw
   rm -f "$out"
-  ( umask 077
-    if printf '%s\n%s\n' "$pw" "$pw" | script -qec "tigervncpasswd '$out'" /dev/null >/dev/null 2>&1; then
-      :
+  if command -v script >/dev/null 2>&1; then
+    ( umask 077
+      printf '%s\n%s\n' "$pw" "$pw" | script -qec "tigervncpasswd '$out'" /dev/null >/dev/null 2>&1
+    )
+  fi
+  if [ ! -s "$out" ]; then
+    raw=$(printf '%s\n%s\n' "$pw" "$pw" | tigervncpasswd -f 2>/dev/null | head -c 8)
+    if [ "${#raw}" -eq 8 ]; then
+      ( umask 077; printf '%s' "$raw" > "$out" )
     fi
-  )
+  fi
   [ -f "$out" ] || return 1
   [ "$(wc -c < "$out")" -eq 8 ] || return 2
+  chmod 0600 "$out"
   return 0
 }
 
@@ -246,7 +257,7 @@ kv "unix RFB socket" "$([ -S "$RFB_SOCK" ] && echo created || echo "NOT created"
 if [ -S "$RFB_SOCK" ] && command -v python3 >/dev/null 2>&1; then
   printf '\n--- RFB authentication tests (python3, DES via openssl) ---\n'
   python3 - "$RFB_SOCK" "$PASSFILE" "$WORK" <<'PY'
-import os, socket, struct, subprocess, sys
+import os, shutil, socket, struct, subprocess, sys
 
 sock_path, passfile, work = sys.argv[1], sys.argv[2], sys.argv[3]
 
@@ -303,11 +314,24 @@ def write_password_file(path, password):
     tmp = path + ".new"
     if os.path.exists(tmp):
         os.unlink(tmp)
-    subprocess.run(
-        ["script", "-qec", f"tigervncpasswd '{tmp}'", "/dev/null"],
-        input=(password + "\n" + password + "\n").encode(),
-        capture_output=True)
-    if not os.path.exists(tmp) or os.path.getsize(tmp) != 8:
+    made = False
+    if shutil.which("script"):
+        subprocess.run(
+            ["script", "-qec", f"tigervncpasswd '{tmp}'", "/dev/null"],
+            input=(password + "\n" + password + "\n").encode(),
+            capture_output=True)
+        made = os.path.exists(tmp) and os.path.getsize(tmp) == 8
+    if not made:
+        raw = subprocess.run(
+            ["tigervncpasswd", "-f"],
+            input=(password + "\n" + password + "\n").encode(),
+            capture_output=True).stdout[:8]
+        if len(raw) == 8:
+            with open(tmp, "wb") as fh:
+                fh.write(raw)
+            os.chmod(tmp, 0o600)
+            made = True
+    if not made:
         return False, "tigervncpasswd did not produce an 8-byte file"
     os.replace(tmp, path)          # atomic replacement
     return True, f"replaced atomically, mode={oct(os.stat(path).st_mode & 0o777)}"
