@@ -327,6 +327,9 @@ if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
    && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
   branch="${CLOUDCHROME_PROBE_BRANCH:-phase1/evidence}"
   workspace="${GITHUB_WORKSPACE:-}"
+  # PROBE_GIT_TOKEN, when provided as a Codespaces secret, is preferred: the
+  # built-in Codespaces GITHUB_TOKEN is not always accepted as a git credential.
+  git_token="${PROBE_GIT_TOKEN:-$GITHUB_TOKEN}"
   echo "publish target: branch=$branch workspace=${workspace:-<unset>}"
   published=false
   if [ -n "$workspace" ] && [ -d "$workspace/.git" ]; then
@@ -345,7 +348,7 @@ if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
       else
         echo "'git push origin' failed; trying an explicit token URL"
         # Fallback 2: explicit token URL.
-        if git push -q "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+        if git push -q "https://x-access-token:${git_token}@github.com/${GITHUB_REPOSITORY}.git" \
              "HEAD:refs/heads/${branch}" 2>&1 | tail -2; then
           echo "published via the explicit token URL"
           published=true
@@ -367,7 +370,7 @@ print(json.dumps({
     "files": {"phase1-evidence.txt": {"content": body}},
 }))
 PY
-    if curl -fsS -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
+    if curl -fsS -X POST -H "Authorization: token ${git_token}" \
         -H "Accept: application/vnd.github+json" \
         --data @/tmp/probe-gist.json \
         https://api.github.com/gists > /tmp/probe-gist-resp.json 2>/tmp/probe-gist-err.txt; then
@@ -382,6 +385,7 @@ PY
 else
   echo "publishing not requested (CLOUDCHROME_PROBE_PUBLISH != 1 or no token)"
 fi
+
 
 
 section "END OF EVIDENCE"

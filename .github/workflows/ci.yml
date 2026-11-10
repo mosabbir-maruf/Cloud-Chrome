@@ -184,7 +184,7 @@ jobs:
           # The .deb version carries a Debian revision (e.g. 157.0.8103.50-1);
           # the browser itself reports the upstream version.
           check google-chrome "${CHROME_VERSION%-*}" "$(google-chrome --version | sed -E 's#^Google Chrome ([^ ]+).*#\1#')"
-          check age "$AGE_VERSION" "$(age --version | sed -E 's#^age v?([^ ]+).*#\1#')"
+          check age "$AGE_VERSION" "$(age --version | sed -E 's#^v?([0-9].*)#\1#')"
           check noVNC "$NOVNC_VERSION" "$(jq -r .version /usr/local/share/novnc/package.json)"
 
           printf '\n=== required binaries ===\n'
