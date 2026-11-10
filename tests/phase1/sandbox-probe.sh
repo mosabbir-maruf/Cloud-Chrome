@@ -328,8 +328,36 @@ ls -la "$WORK" | sed -n '1,20p'
 # ---------------------------------------------------------------------------
 section "8. Publishing the evidence"
 # ---------------------------------------------------------------------------
+# The Codespaces GITHUB_TOKEN is a REST API credential, not a git credential,
+# so the evidence is published through the repository API. A git push is kept as
+# a secondary path for environments where the workspace remote can push.
+publish_via_issue() {
+  local token="$1" body_file=/tmp/probe-issue.md json_file=/tmp/probe-issue.json
+  {
+    echo "## Cloud-Chrome Phase 1 sandbox probe evidence"
+    echo
+    echo '```'
+    # Keep the body comfortably below the GitHub issue size limit.
+    head -c 50000 "$EVIDENCE_FILE"
+    echo '```'
+  } > "$body_file"
+  python3 -c 'import json,sys;print(json.dumps({"title":"Phase 1 sandbox probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' "$body_file" > "$json_file"
+  status=$(curl -sS -o /tmp/probe-issue-resp.json -w '%{http_code}' -X POST \
+      -H "Authorization: Bearer ${token}" \
+      -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+      --data @"$json_file" \
+      "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt)
+  echo "issue publication HTTP status: ${status}"
+  if [ "${status}" = "201" ]; then
+    echo "published as an issue: $(jq -r '.html_url' /tmp/probe-issue-resp.json 2>/dev/null)"
+  else
+    echo "issue publication failed: $(head -c 300 /tmp/probe-issue-resp.json 2>/dev/null) $(head -c 200 /tmp/probe-issue-err.txt 2>/dev/null)"
+  fi
+  rm -f "$body_file" "$json_file" /tmp/probe-issue-resp.json /tmp/probe-issue-err.txt
+  [ "${status}" = "201" ]
+}
+
 publish_via_git() {
-  # Push the evidence to a branch. Returns 0 on success.
   local branch="$1" token="$2"
   (
     cd "$WORKSPACE_ROOT" || exit 1
@@ -345,48 +373,21 @@ publish_via_git() {
   )
 }
 
-publish_via_issue() {
-  # Fallback: a repository issue, which anyone with repository access can read.
-  local token="$1" payload resp
-  {
-    echo "## Cloud-Chrome Phase 1 sandbox probe evidence"
-    echo
-    echo '```'
-    cat "$EVIDENCE_FILE"
-    echo '```'
-  } > /tmp/probe-issue.md
-  payload=$(python3 -c 'import json,sys;print(json.dumps({"title":"Phase 1 sandbox probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' /tmp/probe-issue.md)
-  resp=$(curl -fsS -X POST -H "Authorization: Bearer ${token}" \
-      -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
-      -d "$payload" \
-      "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt)
-  rc=$?
-  rm -f /tmp/probe-issue.md /tmp/probe-issue-err.txt
-  if [ "$rc" -eq 0 ]; then
-    echo "published as an issue: $(printf '%s' "$resp" | jq -r '.html_url' 2>/dev/null)"
-    return 0
-  fi
-  echo "issue publication failed"
-  return 1
-}
-
 if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
    && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
   branch="${CLOUDCHROME_PROBE_BRANCH:-phase1/evidence}"
   git_token="${PROBE_GIT_TOKEN:-$GITHUB_TOKEN}"
   echo "publish target: branch=$branch workspace=$WORKSPACE_ROOT"
   published=false
-  if [ -d "$WORKSPACE_ROOT/.git" ]; then
+  if publish_via_issue "$git_token"; then
+    published=true
+  fi
+  if [ "$published" != "true" ] && [ -d "$WORKSPACE_ROOT/.git" ]; then
     cp "$EVIDENCE_FILE" "$WORKSPACE_ROOT/phase1-evidence.txt"
     if publish_via_git "$branch" "$git_token"; then
       echo "published via git"
       published=true
     fi
-  else
-    echo "no git workspace found at '${WORKSPACE_ROOT}'"
-  fi
-  if [ "$published" != "true" ]; then
-    publish_via_issue "$git_token" && published=true
   fi
   echo "published=$published"
 else

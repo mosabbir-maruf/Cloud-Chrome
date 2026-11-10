@@ -13,7 +13,7 @@
   "runArgs": [
     "--shm-size=1g",
     "--security-opt",
-    "seccomp=${containerWorkspaceFolder}/.devcontainer/seccomp/chrome.json"
+    "seccomp=/tmp/cloudchrome-seccomp.json"
   ],
   "forwardPorts": [
     6080
@@ -35,5 +35,6 @@
     "ghcr.io/devcontainers/features/sshd:1.1.0": {
       "version": "latest"
     }
-  }
+  },
+  "initializeCommand": "cp \"${localWorkspaceFolder}/.devcontainer/seccomp/chrome.json\" /tmp/cloudchrome-seccomp.json && chmod 0644 /tmp/cloudchrome-seccomp.json"
 }
