@@ -99,21 +99,6 @@ for label, family in (("socketpair(AF_UNIX=1)", socket.AF_UNIX), ("socketpair(AF
 # SCMP_ARCH_X86 sub-architecture filter to it.
 machine = platform.machine()
 
-# Optional: disable the 32-bit compatibility entry point.
-# personality(0xFFFFFFFF) includes ADDR_NO_32BIT and is one of the personality
-# values the upstream profile permits.
-if len(sys.argv) > 1 and sys.argv[1] == "no32":
-    # ADDR_NO_32BIT on its own: 0xFFFFFFFF is what upstream permits, but the
-    # kernel rejects it, so the profile permits the exact value instead.
-    ADDR_NO_32BIT = 0x0040000
-    ctypes.set_errno(0)
-    old_persona = libc.personality(ADDR_NO_32BIT)
-    applied = old_persona >= 0
-    err = ctypes.get_errno()
-    print("personality(ADDR_NO_32BIT)|%s|previous=%d|errno=%s" % (
-        "APPLIED" if applied else "FAILED", old_persona,
-        errno.errorcode.get(err, "0") if not applied else "0"))
-
 if machine not in ("x86_64", "i686"):
     print(f"socketcall_compat|NOT_APPLICABLE|0|{machine}")
 else:
@@ -171,12 +156,73 @@ PY
 socket_probe=$(python3 "$WORK/socketprobe.py")
 echo "$socket_probe" | sed 's/^/      /'
 
-# The same probe under ADDR_NO_32BIT: the kernel then refuses the 32-bit
-# compatibility entry point, which is the mitigation for a container whose
-# seccomp filter does not cover the compat syscall architecture.
-compat_no32=$(python3 "$WORK/socketprobe.py" no32 2>&1 || true)
-echo "--- the same probe with ADDR_NO_32BIT (personality(0xFFFFFFFF)) ---"
-echo "$compat_no32" | sed 's/^/      /'
+# The ASLR regression and the container-level-control investigation.
+cat > "$WORK/personality.py" <<'PY'
+import ctypes, errno, os
+
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+# Linux personality flags (include/uapi/linux/personality.h).
+UNAME26 = 0x0020000
+ADDR_NO_RANDOMIZE = 0x0040000
+
+
+def persona():
+    try:
+        with open("/proc/self/personality") as fh:
+            return fh.read().strip()
+    except OSError as exc:
+        return "<unreadable:%s>" % errno.errorcode.get(exc.errno, "?")
+
+
+def aslr_disabled(value):
+    try:
+        return bool(int(value, 16) & ADDR_NO_RANDOMIZE)
+    except ValueError:
+        return None
+
+
+print("persona_before|%s|%s" % (persona(), aslr_disabled(persona())))
+
+for label, value in (("personality(ADDR_NO_RANDOMIZE)", ADDR_NO_RANDOMIZE),
+                     ("personality(UNAME26|ADDR_NO_RANDOMIZE)", UNAME26 | ADDR_NO_RANDOMIZE)):
+    ctypes.set_errno(0)
+    ret = libc.personality(value)
+    err = ctypes.get_errno()
+    applied = ret >= 0
+    if applied:
+        # Restore the default personality at once: this test process must never
+        # be left with ASLR disabled.
+        libc.personality(0)
+    print("%s|%s|ret=%d|errno=%s" % (
+        label, "APPLIED" if applied else "REFUSED", ret,
+        errno.errorcode.get(err, "0") if not applied else "0"))
+
+print("persona_after|%s|%s" % (persona(), aslr_disabled(persona())))
+
+# The normal query, which the profile permits.
+ctypes.set_errno(0)
+query = libc.personality(0xFFFFFFFF)
+qerr = ctypes.get_errno()
+print("personality(0xffffffff) query|%s|ret=%d|errno=%s" % (
+    "OK" if query >= 0 else "REFUSED", query,
+    errno.errorcode.get(qerr, "0") if query < 0 else "0"))
+
+# Is there a container-level control for the 32-bit compatibility entry point?
+# /proc/sys/abi/ia32_emulation is a global (not namespaced) sysctl, so it is
+# host state. It is only read here; it is never written.
+path = "/proc/sys/abi/ia32_emulation"
+if os.path.exists(path):
+    with open(path) as fh:
+        value = fh.read().strip()
+    print("ia32_emulation|%s|writable_by_this_user=%s" % (
+        value, "yes" if os.access(path, os.W_OK) else "no"))
+else:
+    print("ia32_emulation|<not exposed>|writable_by_this_user=no")
+PY
+aslr_probe=$(python3 "$WORK/personality.py" 2>&1 || true)
+echo "--- personality and ia32_emulation probe ---"
+echo "$aslr_probe" | sed 's/^/      /'
 
 get() { echo "$socket_probe" | awk -F'|' -v k="$1" '$1==k{print $2":"$4}'; }
 
@@ -219,32 +265,34 @@ esac
 case "$compat_alg" in
   ALLOWED*)
     fail "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg (the compatibility path reaches the kernel)" ;;
-  *EPERM*) pass "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg (seccomp)" ;;
-  DENIED*) pass "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg (the kernel does not provide this family)" ;;
+  *EPERM*) pass "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg (denied by seccomp)" ;;
+  DENIED*)
+    # The kernel refused the family because it does not provide it. That is
+    # not a policy decision, so this is explicitly not a security pass.
+    note "AF_ALG via socketcall(2) (int 0x80)" "$compat_alg NOT_VERIFIABLE_ON_THIS_HOST (the kernel does not provide AF_ALG, so the filter was never consulted)" ;;
   *) note "AF_ALG via socketcall(2) (int 0x80)" "$compat_alg" ;;
 esac
 case "$compat_vsock" in
   ALLOWED*) fail "AF_VSOCK is not creatable via socketcall(2) (int 0x80)" "$compat_vsock" ;;
-  DENIED*) pass "AF_VSOCK is not creatable via socketcall(2) (int 0x80)" "$compat_vsock" ;;
+  DENIED*) note "AF_VSOCK via socketcall(2) (int 0x80)" "$compat_vsock NOT_VERIFIABLE_ON_THIS_HOST (the kernel does not provide AF_VSOCK)" ;;
   *) note "AF_VSOCK via socketcall(2) (int 0x80)" "$compat_vsock" ;;
 esac
 
-# Under ADDR_NO_32BIT the compatibility entry point must be unusable.
-no32_persona=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /personality\(ADDR_NO_32BIT\)/{print $2}' | head -1)
-no32_control=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_INET/{print $2":"$4}' | head -1)
-no32_alg=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_ALG/{print $2":"$4}' | head -1)
-# personality(ADDR_NO_32BIT) prevents executing 32-bit binaries. It does not
-# prevent the int 0x80 instruction path, which the measurement shows is not
-# covered by the container's seccomp filter. Both facts are reported.
-case "$no32_persona" in
-  APPLIED*) pass "personality(ADDR_NO_32BIT) can be applied" "blocks 32-bit binaries" ;;
-  *) fail "personality(ADDR_NO_32BIT) can be applied" "$no32_persona" ;;
+# The ASLR regression: a request to disable address-space randomisation must
+# be refused, and this test process must not end up with ASLR disabled.
+aslr_refused=$(printf '%s' "$aslr_probe" | awk -F'|' '$1 ~ /personality\(ADDR_NO_RANDOMIZE\)/{print $2}' | head -1)
+aslr_after=$(printf '%s' "$aslr_probe" | awk -F'|' '$1 ~ /^persona_after/{print $3}' | head -1)
+if [ "$aslr_refused" = "REFUSED" ]; then
+  pass "personality(ADDR_NO_RANDOMIZE) is refused" "$(printf '%s' "$aslr_probe" | awk -F'|' '$1 ~ /personality\(ADDR_NO_RANDOMIZE\)/{print $3":"$4}' | head -1)"
+else
+  fail "personality(ADDR_NO_RANDOMIZE) is refused" "$aslr_refused (the request was applied)"
+fi
+case "$aslr_after" in
+  False|0) pass "this test process did not end with ASLR disabled" "persona ADDR_NO_RANDOMIZE bit = $aslr_after" ;;
+  *) fail "this test process did not end with ASLR disabled" "ADDR_NO_RANDOMIZE bit = $aslr_after" ;;
 esac
-case "$no32_control" in
-  DENIED*) pass "ADDR_NO_32BIT also closes the int 0x80 compatibility path" "$no32_control" ;;
-  *) note "ADDR_NO_32BIT does not close the int 0x80 path" "$no32_control (the compat syscall is not covered by the seccomp filter)" ;;
-esac
-note "AF_ALG via socketcall(2) with ADDR_NO_32BIT" "$no32_alg"
+note "personality(0xffffffff) query" "$(printf '%s' "$aslr_probe" | awk -F'|' '$1 ~ /personality\(0xffffffff\)/{print $2":"$3}' | head -1)"
+note "ia32_emulation (host-level control)" "$(printf '%s' "$aslr_probe" | awk -F'|' '$1 ~ /ia32_emulation/{print $2":"$3}' | head -1)"
 
 # ---------------------------------------------------------------------------
 # 5-6: namespace operations

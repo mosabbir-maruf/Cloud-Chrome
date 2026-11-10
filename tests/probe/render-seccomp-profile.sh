@@ -87,6 +87,10 @@ mask_unshare = complement(UNSHARE_ALLOWED)
 # This image is amd64-only, so the 32-bit compatibility path is removed here:
 # socketcall is dropped from the allow-list. The loss of 32-bit compatibility
 # is deliberate and is recorded in docs/SECURITY.md.
+#
+# No personality() rule is added. The upstream allow-list is kept unchanged:
+# permitting ADDR_NO_RANDOMIZE would disable ASLR, and the kernel offers no
+# container-scoped way to disable the ia32 compatibility entry point.
 socketcall_removed = 0
 for group in profile["syscalls"]:
     names = group.get("names") or []
@@ -95,29 +99,6 @@ for group in profile["syscalls"]:
         socketcall_removed += 1
 if socketcall_removed == 0:
     raise SystemExit("the upstream baseline no longer contains the expected socketcall rule")
-
-# --- a second deliberate, scoped deviation ---------------------------------
-# The upstream profile permits a fixed set of personality(2) values: 0
-# (PER_LINUX), 8 (PER_LINUX32), 131072 and 131080 (UNAME26 variants) and
-# 0xFFFFFFFF. It does not permit ADDR_NO_32BIT (524288) on its own, and
-# 0xFFFFFFFF is rejected by the kernel. Without this rule a process cannot
-# disable the 32-bit compatibility entry point, which is the only in-container
-# way to close the int 0x80 path that the seccomp filter does not cover.
-# Only the exact ADDR_NO_32BIT value is added.
-ADDR_NO_32BIT = 0x0040000
-
-profile["syscalls"].append({
-    "names": ["personality"],
-    "action": "SCMP_ACT_ALLOW",
-    "args": [{"index": 0, "value": ADDR_NO_32BIT, "op": "SCMP_CMP_EQ"}],
-    "comment": (
-        "Cloud-Chrome: permits personality(ADDR_NO_32BIT) so that a process can "
-        "disable the 32-bit compatibility syscall entry point (int 0x80), which "
-        "the container's seccomp filter does not cover. The upstream value "
-        "0xFFFFFFFF is rejected by the kernel, so the exact ADDR_NO_32BIT value "
-        "is added instead."
-    ),
-})
 
 profile["syscalls"].extend([
     {
