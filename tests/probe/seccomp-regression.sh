@@ -187,7 +187,9 @@ def run(label, mode):
     os.close(r)
     os.waitpid(pid, 0)
     e = int(data.decode() or "1")
-    print(f"{label}|{'ALLOWED' if e == 0 else 'DENIED'}|{e}|{errno.errorcode.get(e, str(e))}")
+    # Tab separated: the labels contain '|', which would break a pipe-delimited format.
+    print("\t".join([label, "ALLOWED" if e == 0 else "DENIED", str(e),
+                      errno.errorcode.get(e, str(e))]))
 
 run("unshare(CLONE_NEWUSER)", "unshare:0x10000000")
 run("unshare(CLONE_NEWUSER|CLONE_NEWNET)", "unshare:0x50000000")
@@ -202,7 +204,7 @@ PY
 ns_probe=$(python3 "$WORK/nsprobe.py")
 echo "$ns_probe" | sed 's/^/      /'
 
-ns() { echo "$ns_probe" | awk -F'|' -v k="$1" '$1==k{print $2":"$4}'; }
+ns() { echo "$ns_probe" | awk -F'\t' -v k="$1" '$1==k{print $2":"$4}'; }
 
 case "$(ns 'unshare(CLONE_NEWUSER)')" in
   ALLOWED:*) pass "unshare(CLONE_NEWUSER) permitted" "$(ns 'unshare(CLONE_NEWUSER)')" ;;
