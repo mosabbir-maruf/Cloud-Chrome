@@ -50,7 +50,7 @@ printf 'CapBnd      : %s\n' "$(awk '/^CapBnd:/{print $2}' /proc/self/status)"
 # ---------------------------------------------------------------------------
 echo
 echo "=== 1-3: socket families and the socketcall ABI ==="
-socket_probe=$(python3 - <<'PY'
+cat > "$WORK/socketprobe.py" <<'PY'
 import ctypes, errno, mmap, os, platform, socket, struct
 
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -151,8 +151,21 @@ else:
     # Keep the buffers alive until here.
     del args_ref, stub_ref
 PY
-)
+
+socket_probe=$(python3 "$WORK/socketprobe.py")
 echo "$socket_probe" | sed 's/^/      /'
+
+# The same probe under ADDR_NO_32BIT: the kernel then refuses the 32-bit
+# compatibility entry point, which is the mitigation for a container whose
+# seccomp filter does not cover the compat syscall architecture.
+if command -v setarch >/dev/null 2>&1 && setarch --addr-no-32bit true 2>/dev/null; then
+  compat_no32=$(setarch --addr-no-32bit python3 "$WORK/socketprobe.py" 2>&1 || true)
+  echo "--- the same probe with ADDR_NO_32BIT (setarch --addr-no-32bit) ---"
+  echo "$compat_no32" | sed 's/^/      /'
+else
+  compat_no32=""
+  echo "--- setarch --addr-no-32bit is not available in this image ---"
+fi
 
 get() { echo "$socket_probe" | awk -F'|' -v k="$1" '$1==k{print $2":"$4}'; }
 
@@ -204,6 +217,16 @@ case "$compat_vsock" in
   DENIED*) pass "AF_VSOCK is not creatable via socketcall(2) (int 0x80)" "$compat_vsock" ;;
   *) note "AF_VSOCK via socketcall(2) (int 0x80)" "$compat_vsock" ;;
 esac
+
+# Under ADDR_NO_32BIT the compatibility entry point must be unusable.
+if [ -n "$compat_no32" ]; then
+  no32_control=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_INET/{print $2":"$4}' | head -1)
+  case "$no32_control" in
+    ALLOWED*) fail "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control (still reachable)" ;;
+    DENIED*) pass "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control" ;;
+    *) note "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control" ;;
+  esac
+fi
 
 # ---------------------------------------------------------------------------
 # 5-6: namespace operations
