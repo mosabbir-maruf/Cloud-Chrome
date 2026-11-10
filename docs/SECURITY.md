@@ -13,7 +13,7 @@ carried forward to later phases.
 GitHub-hosted CI runner or inside a real GitHub Codespaces dev container
 (region `CentralIndia`, machine `basicLinux32gb` = 2 cores / 8 GB RAM / 32 GB storage,
 kernel `6.8.0-1064-azure`, Ubuntu 24.04.3 LTS). Raw transcripts are published as
-repository issues #1–#8; the Phase 1.1 run is issue #8.
+repository issues #1–#9; the final Phase 1.1 run is issue #9.
 
 ---
 
@@ -72,7 +72,16 @@ Three, all deliberate, all generated from the pinned baseline by
 |---|---|---|
 | 1 | `unshare` permitted with `CLONE_NEWUSER` only | Chromium's namespace sandbox calls exactly `unshare(CLONE_NEWUSER)` (`sandbox/linux/services/credentials.cc`) |
 | 2 | `clone` permitted with `CLONE_NEWUSER\|CLONE_NEWPID\|CLONE_NEWNET` plus the 8-bit termination signal | Chromium's namespace sandbox uses `clone(CLONE_NEWUSER\|SIGCHLD)`, `clone(CLONE_NEWPID\|SIGCHLD)` and the namespace set `{CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET}` (`namespace_sandbox.cc`) |
-| 3 | `socketcall` removed from the allow-list, and `personality(ADDR_NO_32BIT)` added | The 32-bit compatibility entry point (`int 0x80`) reaches `socketcall(2)`, whose socket domain sits behind a pointer and therefore cannot be filtered. Removing the allowance and permitting `ADDR_NO_32BIT` are the in-image steps towards closing that path (see §4.4 for the measured outcome) |
+| 3 | `socketcall` removed from the allow-list | The 32-bit compatibility entry point (`int 0x80`) reaches `socketcall(2)`, whose socket domain sits behind a pointer and therefore cannot be filtered. Removing the allowance is stricter than upstream. It does **not** close the entry point — see §4.4 |
+
+**No `personality(2)` rule is added.** The upstream allow-list is kept exactly as
+published (`0`, `8`, `131072`, `131080`, `0xFFFFFFFF`). In particular
+`ADDR_NO_RANDOMIZE` (`0x0040000`) is **not** permitted: allowing it would let a
+process disable ASLR. There is no personality flag at that value for disabling
+32-bit compatibility, and a previous revision of this document wrongly named it
+one; that rule has been removed and the profile regenerated from the pinned
+baseline. The regression suite now proves that a request to disable ASLR is
+refused (§4.5).
 
 **Deliberate loss of 32-bit compatibility:** this image is amd64-only. No 64-bit program in
 it uses the 32-bit syscall multiplexer, and the profile no longer permits it.
@@ -160,11 +169,11 @@ no child is left behind.
 ### 4.3 Chrome sandbox activation
 
 Measured on the CI runner and again inside a real Codespaces dev container
-(issue #8):
+(issue #9):
 
 | Check | Result |
 |---|---|
-| Chrome browser process | alive (CI pid 139; Codespace pid 363) |
+| Chrome browser process | alive (CI pid 164; Codespace pid 370) |
 | Renderer processes | 8 (both environments) |
 | Every renderer `NoNewPrivs` | `1` |
 | Every renderer `Seccomp` | `2` (container filter + Chromium's own) |
@@ -172,54 +181,87 @@ Measured on the CI runner and again inside a real Codespaces dev container
 | `--no-sandbox` in any argv | absent |
 | `CAP_SYS_ADMIN` in the container's bounding set | absent |
 | `unshare(CLONE_NEWUSER)` | `= 0 (user namespace created)` |
-| Regression suite result in the Codespace | 30 checks passed, 0 failed |
+| Regression suite result | 29 checks passed, 0 failed (CI runner and Codespace) |
 
-### 4.4 The AF_ALG compatibility path — measured, and what it means
+### 4.4 The AF_ALG compatibility path — measured, and what it does not prove
 
 An x86_64 process can enter the 32-bit syscall ABI with `int 0x80`, where
-`socketcall(2)` hides the socket domain behind a pointer that seccomp cannot filter.
-The probe therefore invokes `socketcall(SYS_SOCKET)` through `int 0x80` with a
-32-bit-compatible argument array in the low 4 GiB, and tries AF_ALG and AF_VSOCK.
+`socketcall(2)` hides the socket domain behind a pointer that seccomp cannot
+filter. The probe therefore invokes `socketcall(SYS_SOCKET)` through `int 0x80`
+with a 32-bit-compatible argument array in the low 4 GiB.
 
-| Result | Value |
-|---|---|
-| `socket(AF_ALG)` — direct path | **EPERM** — the seccomp filter denied it |
-| `socketcall_compat(AF_INET, SOCK_STREAM)` — control | **ALLOWED** — the compatibility entry point is reachable |
-| `socketcall_compat(AF_ALG, SOCK_RAW)` | **ESOCKTNOSUPPORT** — the *kernel* refused the family |
-| `socketcall_compat(AF_VSOCK, SOCK_RAW)` | **ESOCKTNOSUPPORT** — the *kernel* refused the family |
-| `personality(ADDR_NO_32BIT)` | **APPLIED** (`previous=0`) — it stops the execution of 32-bit binaries |
-| `socketcall_compat(AF_INET, SOCK_STREAM)` with `ADDR_NO_32BIT` | **still ALLOWED** — the instruction path is not closed by it |
+| Result | CI runner | Codespace | Reading |
+|---|---|---|---|
+| `socket(AF_ALG)` — direct path | `EPERM` | `EPERM` | denied by **seccomp**: the filter answers `EPERM`, whereas the kernel answers `ESOCKTNOSUPPORT` (see the rows below) |
+| `socketcall_compat(AF_INET, SOCK_STREAM)` — control | `ALLOWED` | `ALLOWED` | the compatibility entry point **is reachable** |
+| `socketcall_compat(AF_ALG, SOCK_RAW)` | `ESOCKTNOSUPPORT` | `ESOCKTNOSUPPORT` | refused by the **kernel**, which does not provide the family |
+| `socketcall_compat(AF_VSOCK, SOCK_RAW)` | `ESOCKTNOSUPPORT` | `ESOCKTNOSUPPORT` | refused by the **kernel**, which does not provide the family |
 
 **Enforcement layer, stated precisely:**
 
-* On the **direct** path the AF_ALG restriction is enforced by **seccomp**. The
-  distinction is the errno: the filter answers `EPERM`, while the kernel answers
-  `ESOCKTNOSUPPORT`. The same call through the compatibility path produced
-  `ESOCKTNOSUPPORT`, which proves the kernel — not the filter — handled it.
+* The **direct** path is enforced by seccomp. The errno is the discriminator:
+  the filter answers `EPERM`, the kernel answers `ESOCKTNOSUPPORT`.
 * On the **compatibility** path the call reaches the kernel. Neither the
-  container's seccomp filter (the compat syscall architecture is not covered: the
-  profile's `socketcall` removal changed nothing there) nor the AppArmor
-  `docker-default` profile denied it. **Host LSM enforcement could not be
-  demonstrated.**
-* AF_ALG is unreachable on the measured hosts **because those kernels do not
-  provide the AF_ALG socket family**, not because of a policy decision.
+  container's seccomp filter nor the AppArmor `docker-default` profile denied it.
+  **Host LSM enforcement could not be demonstrated.**
+* Removing `socketcall` from the profile's allow-list did **not** block this
+  path: the compatibility syscall architecture is not covered by the container's
+  filter, so the allowance is not consulted there.
+* Because the tested kernels do not provide the AF_ALG family at all, the
+  AF_ALG compatibility probe is reported as
+  **`NOT_VERIFIABLE_ON_THIS_HOST`** — it is **not** a security pass. On a host
+  whose kernel *does* provide AF_ALG, that path would expose it.
 
-**Consequences, recorded honestly:**
+**Correction to an earlier revision of this document.** A previous revision
+claimed that `personality(ADDR_NO_32BIT)` closed this path. That was wrong on
+two counts: the value used (`0x0040000`) is `ADDR_NO_RANDOMIZE`, which
+disables ASLR and has nothing to do with compatibility mode, and
+`personality(0xFFFFFFFF)` is a *query* for the current persona, not an attempt
+to change it. The rule has been removed; the profile is regenerated from the
+pinned upstream baseline; and the ASLR regression test now proves that an
+ASLR-disabling request is refused (§4.5).
 
-1. `socketcall` was removed from the allow-list anyway: it is strictly stronger
-   than upstream, and it removes an allowance that no in-image consumer needs on
-   an amd64-only image.
-2. `personality(ADDR_NO_32BIT)` was permitted so a process can refuse to
-   **execute** 32-bit binaries. It does not close the `int 0x80` instruction
-   path, which is recorded as a measurement rather than asserted.
-3. **Residual risk:** on a host whose kernel *does* provide AF_ALG, the
-   compatibility path would expose AF_ALG despite the profile. This cannot be
-   closed from inside the container on the measured engine; the effective
-   controls are host-level (disable `CONFIG_IA32_EMULATION`) or not using this
-   image on such a host. The Phase 1.1 measurement is published so this is a
-   known, documented limitation rather than an assumption.
+**Is there a container-level control? No — it is host level.**
 
-### 4.5 Runtime privilege audit
+| Probe | Result |
+|---|---|
+| `/proc/sys/abi/ia32_emulation` inside the container | **not exposed** on either the CI runner or the Codespace |
+| writable by the container user | no |
+
+`/proc/sys/abi/ia32_emulation` is a **global, non-namespaced** sysctl: it is
+host state, it is not visible inside the container, and writing it would need
+`CAP_SYS_ADMIN` in the initial namespace, which this container does not have.
+The effective controls are therefore **host level**: set that sysctl to `0` on
+the host, or boot the host with `ia32_emulation=0`.
+
+> **Cloud-Chrome does not claim complete syscall isolation on a host where the
+> 32-bit compatibility entry point remains reachable.** The AF_ALG restriction
+> is enforced by the profile on the native syscall path only. The residual risk
+> is stated here, measured, and not hidden.
+
+### 4.5 ASLR regression — a personality request must be refused
+
+| Probe | CI runner | Codespace |
+|---|---|---|
+| persona before | `00000000` | `00000000` |
+| `personality(ADDR_NO_RANDOMIZE)` | **REFUSED** (`EPERM`) | **REFUSED** (`EPERM`) |
+| `personality(UNAME26\|ADDR_NO_RANDOMIZE)` | **REFUSED** (`EPERM`) | **REFUSED** (`EPERM`) |
+| persona after | `00000000` | `00000000` |
+| `personality(0xFFFFFFFF)` (ordinary query) | REFUSED (`EPERM`) | REFUSED (`EPERM`) |
+| `/proc/sys/abi/ia32_emulation` | not exposed, not writable | not exposed, not writable |
+
+* An ASLR-disabling request is **refused**. The kernel would accept that
+  persona, so the refusal comes from the filter or the LSM hook, not from the
+  kernel.
+* The test process ends with the persona unchanged
+  (`ADDR_NO_RANDOMIZE` bit = `False`), and it restores the default personality
+  immediately if a request ever succeeds, so no test process is left with ASLR
+  disabled.
+* The ordinary `personality(0xFFFFFFFF)` query is **not usable** in this
+  environment: the upstream profile permits that value, but the LSM hook refuses
+  the call (`EPERM`). This is upstream behaviour and is not weakened here.
+
+### 4.6 Runtime privilege audit
 
 Audited side by side on the CI runner, in the exact pinned base image and in the
 Cloud-Chrome image:
@@ -247,7 +289,7 @@ The base image grants the runtime user unrestricted passwordless root. The Cloud
 image grants nothing, and the runtime user can neither modify nor replace the managed
 Chrome policy. No privileged helper was added to compensate.
 
-### 4.6 TigerVNC password file and live replacement
+### 4.7 TigerVNC password file and live replacement
 
 Measured inside a real Codespaces dev container against the exact packaged
 `tigervnc-standalone-server 1.13.1+dfsg-2build2`:
@@ -270,7 +312,7 @@ replacement, a new connection that accepts the new password, and a new connectio
 rejects the old one. The binary key is written through a file and never held in a shell
 variable.
 
-### 4.7 Image
+### 4.8 Image
 
 | Metric | Value |
 |---|---|
