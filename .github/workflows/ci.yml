@@ -260,10 +260,10 @@ jobs:
             echo "### Base image (${BASE_IMAGE_REPOSITORY}:${BASE_IMAGE_TAG})"
             echo
             echo '```'
-            echo "\$ cat /etc/sudoers.d/vscode"
+            echo "$ cat /etc/sudoers.d/vscode"
             docker run --rm "$base" cat /etc/sudoers.d/vscode 2>&1 || echo "<no such file>"
             echo
-            echo "\$ sudo -n true   (as the vscode user)"
+            echo "$ sudo -n true   (as the vscode user)"
             if docker run --rm --user vscode "$base" sudo -n true 2>&1; then
               echo "exit 0 -> the base image grants the runtime user passwordless root"
             else
@@ -274,24 +274,33 @@ jobs:
             echo "### Cloud-Chrome image"
             echo
             echo '```'
-            echo "\$ sudo -n true   (as the vscode user)"
+            echo "$ sudo -n true   (as the vscode user)"
             if docker run --rm --user vscode "$IMAGE_NAME" sudo -n true 2>&1; then
               echo "exit 0 -> FAIL: the runtime user still has passwordless root"
               exit 1
             else
               echo "non-zero exit -> ok: no passwordless root"
             fi
-            echo "\$ sudo -n -l"
+            echo "$ sudo -n -l"
             docker run --rm --user vscode "$IMAGE_NAME" sudo -n -l 2>&1 || true
-            echo "\$ test -w /etc/opt/chrome/policies/managed/cloudchrome.json"
+            echo "$ test -w /etc/opt/chrome/policies/managed/cloudchrome.json"
             if docker run --rm --user vscode "$IMAGE_NAME" test -w /etc/opt/chrome/policies/managed/cloudchrome.json; then
               echo "writable -> FAIL: the runtime user can modify the managed Chrome policy"
               exit 1
             else
               echo "not writable -> ok"
             fi
+            echo "$ test -w /etc/opt/chrome/policies/managed"
+            if docker run --rm --user vscode "$IMAGE_NAME" test -w /etc/opt/chrome/policies/managed; then
+              echo "writable -> FAIL: the runtime user can replace the managed Chrome policy"
+              exit 1
+            else
+              echo "not writable -> ok"
+            fi
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$RUNNER_TEMP/sudo-audit.txt"
+          cat "$RUNNER_TEMP/sudo-audit.txt"
+          cat "$RUNNER_TEMP/sudo-audit.txt" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Seccomp regression tests with the Cloud-Chrome profile
         run: |
@@ -300,7 +309,8 @@ jobs:
           docker run --rm -i \
             --security-opt "seccomp=$profile" \
             -e CLOUDCHROME_PROFILE_LABEL="cloud-chrome profile" \
-            "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh | tee "$RUNNER_TEMP/seccomp-custom.txt"
+            "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh \
+            | tee "$RUNNER_TEMP/seccomp-custom.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Seccomp comparison with the Docker daemon's default profile
         run: |
@@ -322,7 +332,7 @@ jobs:
             echo '```'
             cat "$RUNNER_TEMP/seccomp-default.txt"
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           echo "default-profile regression exit: $default_rc (recorded, not asserted)"
 
       - name: Record the before/after syscall behaviour
