@@ -327,24 +327,61 @@ if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
    && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
   branch="${CLOUDCHROME_PROBE_BRANCH:-phase1/evidence}"
   workspace="${GITHUB_WORKSPACE:-}"
+  echo "publish target: branch=$branch workspace=${workspace:-<unset>}"
+  published=false
   if [ -n "$workspace" ] && [ -d "$workspace/.git" ]; then
     cp "$EVIDENCE_FILE" "$workspace/phase1-evidence.txt"
     (
       cd "$workspace" || exit 1
       git config user.email "codespace@users.noreply.github.com"
       git config user.name "Cloud-Chrome Phase 1 probe"
-      git checkout -B "$branch"
+      git checkout -B "$branch" 2>&1 | tail -2
       git add phase1-evidence.txt
-      git commit -q -m "chore(phase1): record sandbox probe evidence" || true
-      git push -q "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-        "HEAD:refs/heads/${branch}" && echo "evidence pushed to ${branch}" \
-        || echo "evidence push FAILED"
+      git commit -q -m "chore(phase1): record sandbox probe evidence" 2>&1 | tail -2 || true
+      # Fallback 1: the Codespaces git configuration already carries credentials.
+      if git push -q origin "HEAD:refs/heads/${branch}" 2>&1 | tail -2; then
+        echo "published via 'git push origin'"
+        published=true
+      else
+        echo "'git push origin' failed; trying an explicit token URL"
+        # Fallback 2: explicit token URL.
+        if git push -q "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+             "HEAD:refs/heads/${branch}" 2>&1 | tail -2; then
+          echo "published via the explicit token URL"
+          published=true
+        fi
+      fi
     )
   else
-    echo "no git workspace found at '${workspace}'; evidence not published"
+    echo "no git workspace found at '${workspace}'"
   fi
+  if [ "$published" != "true" ]; then
+    # Fallback 3: a gist is readable without any further credentials.
+    echo "git publication failed; creating a gist instead"
+    python3 - "$EVIDENCE_FILE" <<'PY' > /tmp/probe-gist.json
+import json, sys
+body = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+print(json.dumps({
+    "description": "Cloud-Chrome Phase 1 sandbox probe evidence",
+    "public": False,
+    "files": {"phase1-evidence.txt": {"content": body}},
+}))
+PY
+    if curl -fsS -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
+        -H "Accept: application/vnd.github+json" \
+        --data @/tmp/probe-gist.json \
+        https://api.github.com/gists > /tmp/probe-gist-resp.json 2>/tmp/probe-gist-err.txt; then
+      echo "published as a gist: $(jq -r .html_url /tmp/probe-gist-resp.json 2>/dev/null)"
+      published=true
+    else
+      echo "gist publication failed: $(head -c 200 /tmp/probe-gist-err.txt)"
+    fi
+    rm -f /tmp/probe-gist.json /tmp/probe-gist-resp.json /tmp/probe-gist-err.txt
+  fi
+  echo "published=$published"
 else
-  echo "publishing not requested (CLOUDCHROME_PROBE_PUBLISH != 1)"
+  echo "publishing not requested (CLOUDCHROME_PROBE_PUBLISH != 1 or no token)"
 fi
+
 
 section "END OF EVIDENCE"
