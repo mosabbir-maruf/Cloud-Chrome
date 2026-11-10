@@ -16,6 +16,9 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04@sha256:d94c97dd9cacf183d0
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TARGETARCH
 
+# Checksum verification uses a pipeline, so failures must not be masked.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Single source of truth for every pinned version and checksum.
 COPY config/versions.env /tmp/cloudchrome-versions.env
 
@@ -24,6 +27,13 @@ COPY config/versions.env /tmp/cloudchrome-versions.env
 #
 # The TigerVNC packages, websockify and jq are installed with an exact version
 # requirement: apt fails the build rather than substituting another version.
+#
+# The remaining packages come from the signed Ubuntu archive and deliberately
+# track its security updates; their versions are recorded in
+# config/versions.env and asserted by CI. Pinning them here would break the
+# build on every archive refresh without improving reproducibility of the
+# components this project actually manages.
+# hadolint ignore=DL3008
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \
@@ -64,10 +74,9 @@ RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \
     apt-get update; \
     mkdir -p /tmp/dl; \
-    cd /tmp/dl; \
-    curl -fsSL --retry 3 -o chrome.deb "${CHROME_DEB_URL}"; \
-    echo "${CHROME_DEB_SHA256}  chrome.deb" | sha256sum -c -; \
-    apt-get install -y --no-install-recommends ./chrome.deb; \
+    curl -fsSL --retry 3 -o /tmp/dl/chrome.deb "${CHROME_DEB_URL}"; \
+    echo "${CHROME_DEB_SHA256}  /tmp/dl/chrome.deb" | sha256sum -c -; \
+    apt-get install -y --no-install-recommends /tmp/dl/chrome.deb; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /tmp/dl
 
@@ -79,19 +88,17 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \
-    mkdir -p /tmp/dl; \
-    cd /tmp/dl; \
-    curl -fsSL --retry 3 -o novnc.tar.gz "${NOVNC_URL}"; \
-    echo "${NOVNC_SHA256}  novnc.tar.gz" | sha256sum -c -; \
-    tar -xzf novnc.tar.gz; \
-    mkdir -p /usr/local/share/novnc; \
-    cp -a "noVNC-${NOVNC_VERSION}/." /usr/local/share/novnc/; \
-    rm -rf "noVNC-${NOVNC_VERSION}"; \
-    curl -fsSL --retry 3 -o age.tar.gz "${AGE_URL}"; \
-    echo "${AGE_SHA256}  age.tar.gz" | sha256sum -c -; \
-    tar -xzf age.tar.gz; \
-    install -m 0755 -o root -g root age/age /usr/local/bin/age; \
-    install -m 0755 -o root -g root age/age-keygen /usr/local/bin/age-keygen; \
+    mkdir -p /tmp/dl /usr/local/share/novnc; \
+    curl -fsSL --retry 3 -o /tmp/dl/novnc.tar.gz "${NOVNC_URL}"; \
+    echo "${NOVNC_SHA256}  /tmp/dl/novnc.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/dl/novnc.tar.gz -C /tmp/dl; \
+    cp -a "/tmp/dl/noVNC-${NOVNC_VERSION}/." /usr/local/share/novnc/; \
+    rm -rf "/tmp/dl/noVNC-${NOVNC_VERSION}"; \
+    curl -fsSL --retry 3 -o /tmp/dl/age.tar.gz "${AGE_URL}"; \
+    echo "${AGE_SHA256}  /tmp/dl/age.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/dl/age.tar.gz -C /tmp/dl; \
+    install -m 0755 -o root -g root /tmp/dl/age/age /usr/local/bin/age; \
+    install -m 0755 -o root -g root /tmp/dl/age/age-keygen /usr/local/bin/age-keygen; \
     rm -rf /tmp/dl
 
 # ---------------------------------------------------------------------------
