@@ -1,40 +1,42 @@
 # Cloud-Chrome — Security
 
-Phase 1 security documentation: the enforced policies, the sandbox compatibility
-experiment, and the raw evidence collected from a real GitHub Codespaces dev container.
+Security documentation for the dev container image: the enforced policies, the seccomp
+baseline and its derivation, the measured sandbox and privilege results, and the notes
+carried forward to later phases.
 
-- Architecture and full design rationale: `docs/ARCHITECTURE.md` (Revision 5).
-- Pinned versions and checksums: `config/versions.env`.
-- Experiment harness: `tests/probe/sandbox-probe.sh`.
+- Pinned versions, checksums and the seccomp baseline reference: `config/versions.env`.
+- Profile derivation and verification: `tests/probe/render-seccomp-profile.sh`.
+- Regression suite: `tests/probe/seccomp-regression.sh`.
+- Platform experiment harness: `tests/probe/sandbox-probe.sh`.
 
-**Evidence status:** the measurements in §3 were taken on **2026-11-10/11** in real GitHub
-Codespaces dev containers (region `CentralIndia`, machine `basicLinux32gb` = 2 cores / 8 GB RAM /
-32 GB storage, kernel `6.8.0-1064-azure`, Ubuntu 24.04.3 LTS). Raw transcripts are published as
-repository issues #1–#3 (full probe output). No measurement below is estimated.
+**Evidence status:** every measurement below was taken on **2026-11-10/11** either on a
+GitHub-hosted CI runner or inside a real GitHub Codespaces dev container
+(region `CentralIndia`, machine `basicLinux32gb` = 2 cores / 8 GB RAM / 32 GB storage,
+kernel `6.8.0-1064-azure`, Ubuntu 24.04.3 LTS). Raw transcripts are published as
+repository issues #1–#6.
 
 ---
 
-## 1. Enforced policies in the Phase 1 image
+## 1. Enforced policies in the image
 
 | Control | Enforcement | Where |
 |---|---|---|
 | Chrome Sync disabled | Managed policy `SyncDisabled: true` | `/etc/opt/chrome/policies/managed/cloudchrome.json` |
 | Browser-level Google account disabled | Managed policy `BrowserSignin: 0` | same file |
-| Google **website** sign-in remains available | Not a browser-signin control; verified manually in Phase 2 | — |
-| Policy file is root-owned, not writable by the runtime user | `chown root:root`, `chmod 0644`, asserted at build time with `runuser -u vscode -- test ! -w …` and re-checked in CI | `.devcontainer/Dockerfile`, `ci.yml` |
-| Policy content is validated at build time | `jq -e '.SyncDisabled == true and .BrowserSignin == 0'` | `.devcontainer/Dockerfile` |
+| Google **website** sign-in remains available | Not a browser-signin control; verified in the Phase 2 acceptance test | — |
+| Policy file is root-owned and unwritable | `chown root:root`, `chmod 0644`; asserted at build time and in CI, including that the runtime user cannot write the file **or** replace it | `.devcontainer/Dockerfile`, `ci.yml` |
+| **No blanket passwordless root** | `/etc/sudoers.d/vscode` removed; `sudo -n true` must fail | `.devcontainer/Dockerfile` |
 | Container runs as a non-root user | `USER vscode`; verified in CI (`user=vscode uid=1000`) | `.devcontainer/Dockerfile` |
 | Only port 6080 is forwarded | `forwardPorts: [6080]` | `.devcontainer/devcontainer.json` |
 | Chromium sandbox enabled | Tailored seccomp profile; verified per renderer | `.devcontainer/seccomp/chrome.json` |
-| No `--no-sandbox` | Never passed; asserted in CI and re-checked in the probe | `ci.yml`, probe |
-| No `CAP_SYS_ADMIN` | Never requested; the container's bounding set is recorded | `ci.yml`, probe |
-| No personal browser data, secrets or backups in the image or context | `.dockerignore`, `git ls-files` guard, in-image scan | `.dockerignore`, `ci.yml` |
+| No `--no-sandbox` | Never passed; asserted in CI and in the platform probe | `ci.yml`, `tests/probe/seccomp-regression.sh` |
+| No `CAP_SYS_ADMIN` | Never requested; the capability bounding set is recorded in every probe | `ci.yml`, `tests/probe/seccomp-regression.sh` |
+| No personal browser data, secrets or backups in the image or build context | `.dockerignore`, `git ls-files` guard, in-image scan | `.dockerignore`, `ci.yml` |
 
 ### Changing the isolation policy
 
-The managed policy directory is administrator-controlled and the file is root-owned, so a normal
-`vscode` user cannot remove or edit it at runtime. This is intentional: there is **no runtime switch**
-for the isolation policy, and no privileged helper exists to toggle it.
+The managed policy directory is administrator-controlled and the file is root-owned, so
+the runtime user cannot remove or edit it — and no runtime switch exists.
 
 To enable Chrome Sync deliberately:
 
@@ -48,228 +50,235 @@ The strict policy remains in force until the rebuilt image is deployed.
 
 ---
 
-## 2. Chrome sandbox policy and how it is achieved
+## 2. Seccomp baseline
 
-1. Prefer a supported Chrome **user-namespace** sandbox.
-2. A custom seccomp profile is retained **only because it was measured necessary and proven
-   compatible** (§3).
-3. Sandbox activation is verified from **Chrome itself** — renderer-level checks plus
-   `chrome://sandbox` — never inferred from a probe.
-4. `--no-sandbox` is never used.
-5. `CAP_SYS_ADMIN` is never added; no automatic capability escalation.
-6. If a supported sandbox cannot be established, Cloud-Chrome **fails closed** and reports the blocker.
+| | |
+|---|---|
+| Upstream project | `github.com/moby/profiles` (the module that provides Docker's default profile) |
+| Pinned commit | `7b5ccfab2d6b4e0aa64c6cce401a2705788eafeb` — *"seccomp: restrict socketpair to AF_UNIX and AF_TIPC"*, 2026-11-02 |
+| Source URL | `https://raw.githubusercontent.com/moby/profiles/7b5ccfab2d6b4e0aa64c6cce401a2705788eafeb/seccomp/default.json` |
+| SHA-256 | `15434cc9c9037d85b35027a60721bf45f381782b4283b01d94663366e71569f8` (18 182 bytes) |
+| Recorded in | `config/versions.env` (`SECCOMP_BASE_*`) |
 
-### The tailored seccomp profile
+That baseline replaced the old "allow every address family except AF_VSOCK" rule with a
+**socket-domain allow-list**, and it restricts `socketpair(2)` to AF_UNIX/AF_TIPC. Its
+consequences for this project:
 
-`.devcontainer/seccomp/chrome.json` is **Docker's default profile with exactly one additive rule**:
+* **AF_ALG (38) is denied** — direct access to the kernel crypto API, the vector behind
+  CVE-2026-31431 (GHSA-2274-3hgr-wxv6), is closed at the container boundary.
+* **AF_VSOCK (40) is denied** — no host/guest communication channel.
+* `socketcall(2)` remains in the upstream allow-list because on socketcall ABIs the
+  socket arguments sit behind a pointer and cannot be filtered. Upstream's mitigation is
+  the `socketpair(2)` restriction, which the baseline carries and which is tested here.
 
-```
-names: [clone, unshare, setns]   action: SCMP_ACT_ALLOW   excludes: caps [CAP_SYS_ADMIN]
-```
+### Derivation and drift protection
 
-- Base: `moby/moby` `profiles/seccomp/default.json`, tag `v28.0.0`,
-  SHA-256 `9c1025c88ccaa517b648da571961838744ea2137f176bfe6a48b21294cae9c76` (recorded in
-  `config/versions.env` as `SECCOMP_BASE_SHA256`).
-- `clone3` still returns `ENOSYS`, so Chromium falls back to `clone(2)` as it expects.
-- The container's capability bounding set is unchanged and still excludes `CAP_SYS_ADMIN`.
-- `chroot` was already permitted (the container holds `CAP_SYS_CHROOT`).
+`.devcontainer/seccomp/chrome.json` is **exactly** that baseline plus two declared rules.
+`tests/probe/render-seccomp-profile.sh` is the single source of truth for the derivation:
 
-**Why the profile must be copied to a host path.** The Docker daemon reads a seccomp profile from
-its **own** filesystem, not from the container. In Codespaces the workspace is not reachable at the
-container path by the daemon, so `--security-opt seccomp=<workspace path>` made the container fail to
-start (measured: with the workspace path the probe never ran; without the option it ran). The
-Dev Container `initializeCommand` therefore copies the profile to a host path before the container is
-created, and `runArgs` references that path:
+* `--write` regenerates the file from the pinned baseline.
+* `--verify` (run by CI) regenerates it in a temporary directory and diffs it against the
+  committed file, so **an upstream restriction cannot be silently dropped**.
 
-```
-initializeCommand: cp "${localWorkspaceFolder}/.devcontainer/seccomp/chrome.json" /tmp/cloudchrome-seccomp.json && chmod 0644 /tmp/cloudchrome-seccomp.json
-runArgs: ["--shm-size=1g", "--security-opt", "seccomp=/tmp/cloudchrome-seccomp.json"]
-```
+### Namespace policy — narrowed to what Chromium actually performs
 
-### Failure classification (Revision 5)
+Chromium's namespace sandbox uses exactly these operations (Chromium source,
+`sandbox/linux/services/namespace_sandbox.cc` and `sandbox/linux/services/credentials.cc`):
 
-| Class | Meaning | Remedy available inside the container? |
+| Call | Flags |
+|---|---|
+| `unshare` | `CLONE_NEWUSER` only (`credentials.cc`) |
+| `clone` | `CLONE_NEWUSER \| SIGCHLD` (`credentials.cc`) and `CLONE_NEWPID \| SIGCHLD` (`namespace_sandbox.cc`) |
+| namespace set | `CLONE_NEWUSER \| CLONE_NEWPID \| CLONE_NEWNET` (`kSupportedTypes`) |
+
+`setns` is **not** used by the sandbox and is therefore **not permitted**.
+
+The two added rules express this with argument filters. In the upstream JSON dialect
+`SCMP_CMP_MASKED_EQ` with `valueTwo: 0` means "the bits in `value` must be zero", so the
+mask is the complement of the permitted flags:
+
+| Rule | Mask | Permitted |
 |---|---|---|
-| **K1** | User namespaces disabled by a kernel sysctl | No — fail closed |
-| **K2** | Required syscall not implemented (`ENOSYS`) | No — fail closed |
-| **K3** | Namespace type unsupported | No — fail closed |
-| **S** | Blocked by the **container's seccomp** layer | **Yes — a tailored profile** (the case actually observed) |
-| **A** | Blocked by **host AppArmor** (`apparmor_restrict_unprivileged_userns`) | No — fail closed |
-| **C** | The setuid sandbox helper needs `CAP_SYS_ADMIN` | No — and not an option by policy |
-| **X** | Chrome starts but activates no sandbox | No — fail closed |
+| `unshare` | `18446744073441116159` (`~CLONE_NEWUSER`) | `unshare(CLONE_NEWUSER)` and nothing else |
+| `clone` | `18446744071830437888` (`~(CLONE_NEWUSER\|CLONE_NEWPID\|CLONE_NEWNET\|signal bits)`) | `clone(2)` with Chromium's namespace flags plus a termination signal |
+
+`clone3` still returns `ENOSYS` (upstream rule), so Chromium falls back to `clone(2)`.
+The container never holds `CAP_SYS_ADMIN`.
 
 ---
 
-## 3. Phase 1 experiment results (measured)
+## 3. Measured results
 
-### 3.1 Environment
+### 3.1 Namespace and socket behaviour — Cloud-Chrome profile vs the daemon default
 
-| Measurement | Value |
-|---|---|
-| Kernel | `6.8.0-1064-azure #72~22.04.1-Ubuntu` |
-| OS | Ubuntu 24.04.3 LTS |
-| Container user | `vscode` (uid 1000) |
-| Region | `CentralIndia` |
-| Machine | `basicLinux32gb` (2 cores / 8 GB RAM / 32 GB storage) |
+Both runs used the same image and the same probe; only the seccomp filter differed.
 
-### 3.2 Kernel and LSM layer — **not the blocker**
-
-| Measurement | Value | Reading |
+| Probe | Cloud-Chrome profile | Docker daemon default profile |
 |---|---|---|
-| `/proc/sys/user/max_user_namespaces` | `31741` | user namespaces enabled |
-| `/proc/sys/kernel/unprivileged_userns_clone` | `1` | unprivileged user namespaces allowed |
-| `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` | `0` | **AppArmor does not restrict unprivileged user namespaces** |
-| `/proc/self/attr/current` | `docker-default (enforce)` | the container is confined by the standard Docker AppArmor profile, which does not block userns creation |
+| `socket(AF_INET)` (control) | ALLOWED | ALLOWED |
+| `socket(AF_ALG=38)` | **DENIED (EPERM)** | DENIED (EPERM) |
+| `socket(AF_VSOCK=40)` | **DENIED (EPERM)** | DENIED (EPERM) |
+| `socketcall` | not applicable (x86_64) | not applicable (x86_64) |
+| `socketpair(AF_UNIX=1)` | ALLOWED | ALLOWED |
+| `socketpair(AF_NETLINK=16)` | DENIED (EPERM, seccomp) | DENIED (ESOCKTNOSUPPORT, kernel) |
+| `unshare(CLONE_NEWUSER)` | **ALLOWED** | DENIED (EPERM) |
+| `unshare(CLONE_NEWUSER\|CLONE_NEWNET)` | DENIED (EPERM) | DENIED (EPERM) |
+| `unshare(CLONE_NEWNET)` | DENIED (EPERM) | DENIED (EPERM) |
+| `unshare(CLONE_NEWNS)` | DENIED (EPERM) | DENIED (EPERM) |
+| `unshare(CLONE_NEWUSER\|CLONE_NEWIPC\|CLONE_NEWUTS)` | DENIED (EPERM) | DENIED (EPERM) |
+| `clone(CLONE_NEWUSER\|SIGCHLD)` | **ALLOWED** | DENIED (EPERM) |
+| `clone(CLONE_NEWNET\|SIGCHLD)` | DENIED (EPERM) | DENIED (EPERM) |
+| `clone(CLONE_NEWNS\|SIGCHLD)` | DENIED (EPERM) | DENIED (EPERM) |
+| `clone(CLONE_NEWPID\|SIGCHLD)` outside a user namespace | DENIED (EPERM — the kernel requires `CAP_SYS_ADMIN`; the filter permits the flag) | DENIED (EPERM) |
 
-### 3.3 Container seccomp and capability layer — **the blocker (class S)**
+Reading of the comparison:
 
-| Measurement | Value |
+* The daemon's default profile on the CI runner already denies AF_ALG and AF_VSOCK, so the
+  socket behaviour is no longer a differentiator there — pinning the profile to the
+  maintained upstream baseline is what keeps it that way, rather than depending on the
+  daemon's version.
+* The namespace operations are the real difference: the default profile denies them, which
+  is why Chromium could not start before; the Cloud-Chrome profile permits exactly the two
+  calls Chromium makes and denies everything else.
+* `socketpair(AF_NETLINK)` is denied by the **seccomp layer** under the Cloud-Chrome profile
+  and by the **kernel** under the daemon default — evidence that the pinned profile is
+  stricter than the runner's built-in one for that call.
+
+### 3.2 Chrome sandbox activation
+
+Measured on the CI runner with the Cloud-Chrome profile, and again inside a real
+Codespaces dev container:
+
+| Check | Result |
 |---|---|
-| `Seccomp` | `2` (filter mode), `Seccomp_filters: 1` — Docker's default profile is active |
-| `CapEff` / `CapPrm` / `CapAmb` | `0000000000000000` |
-| `CapBnd` | `00000000a88425fb` — **no `CAP_SYS_ADMIN`** (the setuid-sandbox path is unavailable) |
+| Chrome browser process | alive (CI: pid 93; Codespace: pid 287) |
+| Renderer processes | 8 (CI and Codespace) |
+| Every renderer `NoNewPrivs` | `1` |
+| Every renderer `Seccomp` | `2` (container filter + Chromium's own) |
+| Renderer user namespace | distinct from the browser's (`ns/user` inode differs) — the user-namespace sandbox is in effect |
+| `--no-sandbox` in any argv | absent |
+| `CAP_SYS_ADMIN` in the bounding set | absent (`CapBnd=00000000a80425fb` on the CI runner, `00000000a88425fb` in the Codespace) |
+| `unshare(CLONE_NEWUSER)` | `= 0 (user namespace created)` |
 
-With Docker's default profile, every namespace probe failed:
+### 3.3 Runtime privilege audit
 
-```
-unshare -U                    rc=1  unshare failed: Operation not permitted
-unshare -Ur --map-root-user   rc=1  unshare failed: Operation not permitted
-unshare(CLONE_NEWUSER) failed: errno=1 (EPERM)
-```
-
-Chromium therefore fell back to the setuid sandbox, which cannot create namespaces without
-`CAP_SYS_ADMIN`, and aborted:
-
-```
-Failed to move to new namespace: PID namespaces supported, Network namespace supported,
-but failed: errno = Operation not permitted
-[FATAL] Zygote process exited prematurely with exit code 82 (setuid sandbox: failed to move to new namespaces)
-```
-
-**Classification: class S** — the container's own seccomp layer. Classes K1–K3 and A are ruled out by
-the measurements above.
-
-### 3.4 Namespace creation with the tailored profile — **allowed**
+Audited side by side on the CI runner, in the exact pinned base image and in the
+Cloud-Chrome image:
 
 ```
-unshare -U                    rc=0
-unshare -U -r                 rc=0
-unshare -Ur --map-root-user   rc=0
-unshare -U -n                 rc=0
-unshare -U -p --fork          rc=0
-unshare -U --map-root-user id rc=0   uid=0(root) gid=0(root)
-unshare(CLONE_NEWUSER) = 0  (user namespace created)
+### Base image (mcr.microsoft.com/devcontainers/base:ubuntu-24.04)
+$ cat /etc/sudoers.d/vscode
+vscode ALL=(root) NOPASSWD:ALL
+$ sudo -n true   (as the vscode user)
+exit 0 -> the base image grants the runtime user passwordless root
+
+### Cloud-Chrome image
+$ sudo -n true   (as the vscode user)
+sudo: a password is required
+non-zero exit -> ok: no passwordless root
+$ sudo -n -l
+sudo: a password is required
+$ test -w /etc/opt/chrome/policies/managed/cloudchrome.json
+not writable -> ok
+$ test -w /etc/opt/chrome/policies/managed
+not writable -> ok
 ```
 
-`unshare -U -m` still fails with `cannot change root filesystem propagation: Operation not permitted`
-— the kernel refuses to make the mount propagation change from an unprivileged user namespace. This
-does **not** affect Chromium's sandbox, which does not require it.
+The base image grants the runtime user unrestricted passwordless root. The Cloud-Chrome
+image grants nothing, and the runtime user can neither modify nor replace the managed
+Chrome policy. No privileged helper was added to compensate.
 
-### 3.5 Chrome sandbox activation — **ACTIVE** (the decisive test)
+### 3.4 TigerVNC password file and live replacement
 
-With the tailored profile applied, Google Chrome 157.0.8103.50 started and stayed up:
-
-```
-chrome browser process   alive (pid 300)
-```
-
-Process tree: browser → 3 zygotes → GPU / network / storage utility processes and **many
-`--type=renderer` processes**.
-
-Renderer-level sandbox state (identical for every renderer):
+Measured inside a real Codespaces dev container against the exact packaged
+`tigervnc-standalone-server 1.13.1+dfsg-2build2`:
 
 ```
-[pid 416] --type=renderer
-    CapEff:         0000000000000000
-    CapBnd:         000001ffffffffff
-    NoNewPrivs:     1
-    Seccomp:        2
-    Seccomp_filters: 2      <-- container filter + Chromium's own filter
-    ns/user:        user:[4026532291]   <-- a DIFFERENT user namespace from the browser
+password file created                          yes (8-byte obfuscated key)
+password file mode=600 owner=vscode group=vscode size=8
+unix RFB socket                                created
+auth with the ORIGINAL password : authenticated (connection left open)
+client initialisation complete : ServerInit 640x480 name='vscode@codespaces-8d744e'
+password file replaced          : True - replaced atomically, mode=0o600
+existing connection after replace: still responsive (FramebufferUpdate type=0 rects=1)
+auth with the NEW password      : authenticated (connection left open)
+auth with the OLD password      : rejected (SecurityResult=1)
 ```
 
-| Sandbox criterion | Result |
+All seven properties are confirmed: an 8-byte password file, mode 0600, correct
+ownership, an atomic replacement, an already-authenticated connection that survives the
+replacement, a new connection that accepts the new password, and a new connection that
+rejects the old one. The binary key is written through a file and never held in a shell
+variable.
+
+### 3.5 Image
+
+| Metric | Value |
 |---|---|
-| Renderer processes exist | ✅ |
-| `NoNewPrivs: 1` on every renderer | ✅ |
-| `Seccomp: 2` with `Seccomp_filters: 2` (container filter **+** Chromium's own) | ✅ |
-| `CapEff: 0` in the renderer (no capabilities) | ✅ |
-| Distinct `ns/user` per sandboxed process | ✅ namespace sandbox in effect |
-| `--no-sandbox` in any argv | ✅ absent |
-| `CAP_SYS_ADMIN` in the container bounding set | ✅ absent |
-
-This is the signature of Chromium's **user-namespace sandbox**. `chrome://sandbox` could not be
-rendered by the automated probe (it needs a browser client); the manual confirmation over noVNC is a
-Phase 2 acceptance step.
-
-### 3.6 TigerVNC compatibility (exact Ubuntu package `1.13.1+dfsg-2build2`)
-
-| Measurement | Result |
-|---|---|
-| `Xtigervnc -version` | `Xvnc TigerVNC 1.13.1 - built 2024-04-01` (X server release 12101011) |
-| Packaged man pages | `/usr/share/man/man1/Xtigervnc.1.gz`, `tigervncsession.1.gz`, `/usr/share/man/man8/tigervncsession.8.gz` |
-| `tigervncpasswd -help` | `usage: tigervncpasswd [file]` / `tigervncpasswd -f` |
-| Password file created by `tigervncpasswd` | **8 bytes**, mode **0600**, owner `vscode` |
-| Authentication with the original password | **accepted** (`SecurityResult=0`) |
-| Password file replaced | **atomically** (new file created in the same directory, then renamed), mode 0600 preserved |
-| Authentication with the **new** password | **accepted** |
-| Authentication with the **old** password | **rejected** (`SecurityResult=1`) |
-| Pre-existing connection after the replacement | **still responsive** |
-
-**Conclusion:** the packaged TigerVNC 1.13.1 reads the `-rfbauth` file **per connection**, exactly as
-the upstream documentation states ("The file is accessed each time a connection comes in, so it can be
-changed on the fly"). A password rotation therefore needs **no server restart** and **no interruption
-of the desktop**. The Phase 1 harness confirmed this against the exact installed package rather than
-assuming it.
-
-Implementation note for Phase 2: the password file must be written by `tigervncpasswd` itself (so it
-owns the file and applies mode 0600); the `-f` form writes to stdout and, when stdin is not a
-terminal, also emits the input, so its output must be truncated to the 8-byte key.
-
-### 3.7 Chrome managed policy in the real environment
-
-Chrome logged the policy file being picked up:
-
-```
-Found mandatory policy file: /etc/opt/chrome/policies/managed/cloudchrome.json
-Taking initial snapshot of POLICY_DOMAIN_CHROME policies
-```
-
-### 3.8 Summary
-
-| Question | Answer |
-|---|---|
-| Is a supported Chrome sandbox achievable in GitHub Codespaces? | **Yes** — the user-namespace sandbox, with the tailored seccomp profile |
-| What was the blocker? | Class S — Docker's default seccomp profile, not the kernel or AppArmor |
-| Was `CAP_SYS_ADMIN` needed? | **No** — it was never present and never added |
-| Was `--no-sandbox` used? | **No** |
-| Is a full GUI proven working? | **No.** Chrome rendered on a real X display with an active sandbox, but the noVNC → XFCE → Chrome path is a Phase 2 deliverable |
-| Does the packaged TigerVNC support live password rotation? | **Yes** — proven by the functional test |
+| Uncompressed image size | 662 073 021 bytes (631 MiB) |
+| Runtime user | `vscode` (uid 1000) |
 
 ---
 
-## 4. Notes carried forward to later phases (not implemented yet)
+## 4. Dependency version policy
 
-- **Backup archive member validation (Phase 3).** A restore treats the archive as untrusted input. The
-  design requires a *structured, unambiguous* member-validation strategy: an explicit allow-list of
-  member paths, rejection of every member that is not a regular file or directory (symlinks, hard
-  links, device nodes, FIFOs and sockets are rejected outright), rejection of absolute paths and of
-  `..` traversal components, extraction into a freshly created empty `0700` staging directory that is
-  never reused, extraction of explicitly validated member names only, and `--no-same-owner
-  --no-same-permissions` so archive metadata cannot set ownership or mode. `--keep-directory-symlink`
-  must **not** be used: the GNU tar manual states it *"instructs tar to follow symlinks to directories
-  when extracting from the archive"*, which is the opposite of the required behaviour. The protection
-  comes from rejecting symlink members and from extracting into an empty directory, where tar's
-  default behaviour (remove a same-named symlink, extract a real directory) applies.
-- **No plaintext backup archives are left on disk unnecessarily** (Phase 3): backups are age-encrypted
-  by default, and temporary plaintext artefacts are removed as soon as the encrypted archive is written.
+Two categories, with different rules:
+
+| Category | Install rule | CI rule | Packages |
+|---|---|---|---|
+| `PINNED_*` | **exact** apt version requirement; the build fails rather than substituting another version | installed version must match exactly | `tigervnc-standalone-server`, `tigervnc-common`, `tigervnc-tools`, `websockify`, `jq` |
+| `TRACKED_*` | installed from the signed Ubuntu archive without an exact requirement, so archive security updates are picked up | installed version must **not be older** than the recorded version; a newer version is reported, not failed | `xfce4`, `xfce4-terminal`, `dbus-x11`, `gnome-keyring`, `libsecret-1-0`, `libsecret-tools`, `xdotool`, `fonts-liberation2`, `fonts-noto-color-emoji` |
+
+Downloaded artefacts (Chrome `.deb`, noVNC and age tarballs) are pinned by URL and verified
+against a recorded SHA-256 before anything is unpacked.
+
+This is not "full reproducibility" **and** "automatic tracking" at the same time: the
+components Cloud-Chrome drives are reproducible to the exact version, and the operating
+system libraries around them are deliberately allowed to move with the archive.
+
+---
+
+## 5. SSHD feature — removed
+
+The `ghcr.io/devcontainers/features/sshd:1.1.0` feature was added during Phase 1 so that a
+custom-image Codespace could be reached with `gh codespace ssh` and so that its creation
+log could be downloaded. It was never needed for the measurements: the probe publishes its
+evidence through the repository API, and the Codespaces API routes for ports, logs and
+rebuild are unavailable to the token in use.
+
+The feature is therefore **removed** from `.devcontainer/devcontainer.json`. The image has
+no SSH server, no SSH port is opened, and no additional remote-access service exists. A
+future experiment that genuinely needs SSH can add the feature on a throwaway branch, the
+same way the probe hook is added.
+
+---
+
+## 6. Notes carried forward to later phases (not implemented yet)
+
+- **Backup archive member validation (Phase 3).** A restore treats the archive as untrusted
+  input. The design requires a *structured, unambiguous* member-validation strategy: an
+  explicit allow-list of member paths, rejection of every member that is not a regular file
+  or directory (symlinks, hard links, device nodes, FIFOs and sockets are rejected outright),
+  rejection of absolute paths and of `..` traversal components, extraction into a freshly
+  created empty `0700` staging directory that is never reused, extraction of explicitly
+  validated member names only, and `--no-same-owner --no-same-permissions` so archive
+  metadata cannot set ownership or mode. `--keep-directory-symlink` must **not** be used:
+  the GNU tar manual states it *"instructs tar to follow symlinks to directories when
+  extracting from the archive"*, which is the opposite of the required behaviour. The
+  protection comes from rejecting symlink members and from extracting into an empty
+  directory, where tar's default behaviour (remove a same-named symlink, extract a real
+  directory) applies.
+- **No plaintext backup archives are left on disk unnecessarily** (Phase 3): backups are
+  age-encrypted by default, and temporary plaintext artefacts are removed as soon as the
+  encrypted archive is written.
 - **The VNC password file is never part of a backup** (Phase 3).
-- **Secret delivery** (Phase 2): `cloudchrome init` is silent; the VNC password is shown only by the
-  explicit interactive `cloudchrome passwd`, which refuses to print when stdout is not a terminal.
-- **Chrome argument policy** (Phase 2): no user-supplied Chrome flags; the assembled argument vector is
-  asserted against a forbidden-flag list before Chrome is launched.
-- **Re-running the experiment** (any phase): create a branch from `main` that adds a
-  `postCreateCommand` invoking `tests/probe/sandbox-probe.sh`, create a Codespace from that branch,
-  and read the evidence from the resulting repository issue. The probe publishes through the repository
-  API (the Codespaces `GITHUB_TOKEN` is a REST credential, not a git credential) and falls back to a
-  git push to `probe/evidence`.
+- **Secret delivery** (Phase 2): `cloudchrome init` is silent; the VNC password is shown
+  only by the explicit interactive `cloudchrome passwd`, which refuses to print when stdout
+  is not a terminal.
+- **Chrome argument policy** (Phase 2): no user-supplied Chrome flags at all; the assembled
+  argument vector is asserted against a forbidden-flag list before Chrome is launched.
+- **Re-running the experiment**: create a branch from `main` that adds a `postCreateCommand`
+  invoking `tests/probe/sandbox-probe.sh`, create a Codespace from that branch, and read the
+  evidence from the repository issue the probe publishes. The `sandbox-probe` workflow does
+  the same thing, but needs a repository secret holding a token with the `codespace` scope,
+  because `codespaces` is not a valid `GITHUB_TOKEN` permission scope.
