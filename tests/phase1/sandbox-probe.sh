@@ -381,6 +381,27 @@ PY
     fi
     rm -f /tmp/probe-gist.json /tmp/probe-gist-resp.json /tmp/probe-gist-err.txt
   fi
+  if [ "$published" != "true" ]; then
+    # Fallback 4: an issue comment on the repository. The Codespaces
+    # GITHUB_TOKEN is documented for API calls on its own repository, and the
+    # comment is readable by anyone with repository access.
+    echo "publishing the evidence as an issue comment"
+    {
+      echo "## Cloud-Chrome Phase 1 sandbox probe evidence"
+      echo
+      echo "Codespace: \`${GITHUB_CODESPACE_NAME:-unknown}\`"
+      echo
+      echo '```'
+      cat "$EVIDENCE_FILE"
+      echo '```'
+    } > /tmp/probe-issue.md
+    issue=$(curl -fsS -X POST -H "Authorization: Bearer ${git_token}" \
+        -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+        --data "$(python3 -c 'import json,sys;print(json.dumps({"title":"Phase 1 sandbox probe evidence","body":open("/tmp/probe-issue.md",encoding="utf-8",errors="replace").read()}))')" \
+        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt) \
+      && echo "$issue" | jq -r '.html_url' || echo "issue creation failed: $(head -c 200 /tmp/probe-issue-err.txt)"
+    rm -f /tmp/probe-issue.md /tmp/probe-issue-err.txt
+  fi
   echo "published=$published"
 else
   echo "publishing not requested (CLOUDCHROME_PROBE_PUBLISH != 1 or no token)"
