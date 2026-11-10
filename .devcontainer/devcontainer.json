@@ -11,7 +11,9 @@
     "storage": "32gb"
   },
   "runArgs": [
-    "--shm-size=1g"
+    "--shm-size=1g",
+    "--security-opt",
+    "seccomp=${containerWorkspaceFolder}/.devcontainer/seccomp/chrome.json"
   ],
   "forwardPorts": [
     6080

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cloud-Chrome — Phase 1 sandbox and TigerVNC compatibility probe.
 #
-# Runs INSIDE a real GitHub Codespace dev container and records raw evidence
+# Runs INSIDE a real GitHub Codespaces dev container and records raw evidence
 # about the container's namespace, seccomp, LSM and capability layers, about
 # Google Chrome's own sandbox activation, and about the packaged TigerVNC's
 # password-file behaviour.
@@ -11,12 +11,7 @@
 #
 # Usage: bash sandbox-probe.sh
 # Output: human-readable evidence on stdout, and to the file named by
-# CLOUDCHROME_PROBE_OUTPUT (default: a temporary file that is removed on exit).
-#
-# When CLOUDCHROME_PROBE_PUBLISH=1 and the environment provides GITHUB_TOKEN
-# and GITHUB_REPOSITORY (true inside a Codespace), the evidence file is also
-# pushed to the branch named by CLOUDCHROME_PROBE_BRANCH so it can be read back
-# without any local tooling.
+# CLOUDCHROME_PROBE_OUTPUT (default: a temporary file removed on exit).
 
 set -uo pipefail
 
@@ -25,10 +20,14 @@ EVIDENCE_FILE="${CLOUDCHROME_PROBE_OUTPUT:-$WORK/evidence.txt}"
 mkdir -p "$(dirname "$EVIDENCE_FILE")"
 exec > >(tee -a "$EVIDENCE_FILE") 2>&1
 
+# The workspace root is derived from this script's own location: Codespaces
+# does not export GITHUB_WORKSPACE inside the container.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WORKSPACE_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+
 section() { printf '\n########## %s ##########\n' "$1"; }
 kv() { printf '%-46s %s\n' "$1" "${2:-<empty>}"; }
 
-WORK=$(mktemp -d /tmp/cloudchrome-probe.XXXXXX)
 cleanup() {
   [ -n "${CHROME_PID:-}" ] && kill "$CHROME_PID" 2>/dev/null
   [ -n "${XVNC_PID:-}" ] && kill "$XVNC_PID" 2>/dev/null
@@ -45,6 +44,7 @@ kv "uname -a"          "$(uname -a)"
 kv "os-release"        "$(. /etc/os-release && echo "$PRETTY_NAME")"
 kv "id"                "$(id)"
 kv "container user"    "$(id -un)"
+kv "workspace root"    "$WORKSPACE_ROOT"
 
 # ---------------------------------------------------------------------------
 section "2. Kernel and LSM layer"
@@ -59,8 +59,6 @@ printf '\n--- /proc/self/attr/current (AppArmor profile) ---\n'
 if [ -r /proc/self/attr/current ]; then cat /proc/self/attr/current; else echo "<unavailable>"; fi
 printf '\n--- /sys/kernel/security/apparmor ---\n'
 if [ -d /sys/kernel/security/apparmor ]; then ls -1 /sys/kernel/security/apparmor | head -20; else echo "<apparmor securityfs not mounted>"; fi
-printf '\n--- /proc/filesystems userns support ---\n'
-grep -iE 'userfs|userns' /proc/filesystems || echo "<no userns entry>"
 
 # ---------------------------------------------------------------------------
 section "3. Container seccomp and capability layer"
@@ -72,9 +70,8 @@ if command -v capsh >/dev/null 2>&1; then capsh --print 2>/dev/null | head -20; 
 printf -- '\n--- CAP_SYS_ADMIN present in bounding set? ---\n'
 cap_bnd_hex=$(awk '/^CapBnd:/{print $2}' /proc/self/status)
 if [ -n "$cap_bnd_hex" ]; then
-  # CAP_SYS_ADMIN is bit 21.
   if python3 -c "import sys; sys.exit(0 if (int('$cap_bnd_hex',16) >> 21) & 1 else 1)" 2>/dev/null; then
-    kv "CAP_SYS_ADMIN in bounding set" "YES (setuid sandbox path would be available)"
+    kv "CAP_SYS_ADMIN in bounding set" "YES"
   else
     kv "CAP_SYS_ADMIN in bounding set" "no (setuid sandbox path unavailable)"
   fi
@@ -124,23 +121,22 @@ section "5. Google Chrome sandbox activation (the decisive test)"
 printf -- '--- chrome version ---\n'
 google-chrome --version 2>&1 | head -2
 
-# A temporary display. Xtigervnc is used because it is already installed and
-# creates the X server and the VNC server in one process; the RFB port is
-# disabled so the probe never opens a listening socket.
 export HOME="$WORK/home"; mkdir -p "$HOME"
 PROFILE="$WORK/profile"; mkdir -p "$PROFILE"
 
+# A temporary display. Xtigervnc is used because it is already installed and
+# creates the X server and the VNC server in one process; the RFB port is
+# disabled so the probe never opens a listening socket.
 start_display() {
   Xtigervnc :99 -geometry 1280x800 -depth 24 -SecurityTypes None -rfbport -1 \
       >"$WORK/xvnc.log" 2>&1 &
   XVNC_PID=$!
   for _ in $(seq 1 40); do
-    if xdpyinfo -display :99 >/dev/null 2>&1 || [ -e /tmp/.X11-unix/X99 ]; then return 0; fi
+    [ -e /tmp/.X11-unix/X99 ] && return 0
     sleep 0.25
   done
   return 1
 }
-
 if command -v Xtigervnc >/dev/null 2>&1; then
   if start_display; then
     kv "temporary display" ":99 (Xvnc, rfb port disabled)"
@@ -167,7 +163,7 @@ else
   kv "chrome browser process" "EXITED"
 fi
 
-printf '\n--- chrome process tree (type=renderer highlighted) ---\n'
+printf '\n--- chrome process tree ---\n'
 ps -eo pid,ppid,user,stat,args 2>/dev/null | grep -E "[c]hrome|[c]hromium" | head -40
 
 printf '\n--- per-process sandbox state ---\n'
@@ -176,15 +172,14 @@ for pid in $(pgrep -f -- "--user-data-dir=$PROFILE" 2>/dev/null); do
   ptype=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -o -- '--type=[a-z-]*' | head -1)
   printf '\n[pid %s] %s\n' "$pid" "${ptype:-browser}"
   grep -E '^(Name|Seccomp|Seccomp_filters|NoNewPrivs|CapEff|CapBnd):' "/proc/$pid/status" 2>/dev/null | sed 's/^/    /'
-  printf '    NSpid: '; grep -E '^NSpid:' "/proc/$pid/status" 2>/dev/null | cut -f2-
   printf '    ns/user: '; readlink "/proc/$pid/ns/user" 2>/dev/null || echo "<unreadable>"
   printf '    ns/pid:  '; readlink "/proc/$pid/ns/pid" 2>/dev/null || echo "<unreadable>"
 done
 
 printf '\n--- sandbox-related chrome log output ---\n'
 grep -iE 'sandbox|seccomp|namespace|zygote|no usable' "$CHROME_ERR" 2>/dev/null | head -30 || true
-printf '\n--- chrome stderr (first 40 lines) ---\n'
-sed -n '1,40p' "$CHROME_ERR" 2>/dev/null
+printf '\n--- chrome stderr (first 30 lines) ---\n'
+sed -n '1,30p' "$CHROME_ERR" 2>/dev/null
 
 kill "$CHROME_PID" 2>/dev/null
 wait "$CHROME_PID" 2>/dev/null
@@ -197,41 +192,48 @@ kv "dpkg tigervnc-common"            "$(dpkg-query -W -f='${Version}' tigervnc-c
 kv "dpkg tigervnc-tools"             "$(dpkg-query -W -f='${Version}' tigervnc-tools 2>/dev/null)"
 printf '\n--- Xtigervnc -version ---\n'
 Xtigervnc -version 2>&1 | head -5
-printf '\n--- Xtigervnc documented -rfbauth option (packaged man page) ---\n'
-if [ -r /usr/share/man/man1/Xtigervnc.1.gz ]; then
-  zcat /usr/share/man/man1/Xtigervnc.1.gz 2>/dev/null | grep -A6 -i 'rfbauth' | head -20
+printf '\n--- packaged man page locations ---\n'
+dpkg -L tigervnc-standalone-server 2>/dev/null | grep -i 'man' | head -10 || echo "<none listed>"
+printf '\n--- packaged -rfbauth documentation ---\n'
+manpage=$(dpkg -L tigervnc-standalone-server 2>/dev/null | grep -E 'man1/.*\.gz$' | head -1)
+if [ -n "$manpage" ] && [ -r "$manpage" ]; then
+  echo "reading $manpage"
+  gzip -dc "$manpage" 2>/dev/null | grep -B2 -A8 -i 'rfbauth' | head -30
 else
-  echo "<packaged man page not found>"
+  echo "<packaged man page not readable>"
 fi
-printf '\n--- tigervncpasswd -help (first lines) ---\n'
+printf '\n--- tigervncpasswd -help ---\n'
 tigervncpasswd -help 2>&1 | head -20
 
 # ---------------------------------------------------------------------------
 section "7. TigerVNC password file creation, permissions and live replacement"
 # ---------------------------------------------------------------------------
 PASSFILE="$WORK/passwd"
+
+# The password file must be written by tigervncpasswd itself so that it owns
+# the file and applies mode 0600. It reads the password from the terminal, so
+# a pty is provided when stdin is not one.
 make_password_file() { # $1 = password, $2 = target file
   local pw="$1" out="$2"
   rm -f "$out"
-  # tigervncpasswd -f writes the obfuscated password to stdout; it reads the
-  # password from the terminal, so a pty is provided when stdin is not one.
-  if printf '%s\n%s\n' "$pw" "$pw" | tigervncpasswd -f > "$out" 2>/dev/null && [ -s "$out" ]; then
-    return 0
-  fi
-  rm -f "$out"
-  if command -v script >/dev/null 2>&1; then
-    printf '%s\n%s\n' "$pw" "$pw" | script -qec "tigervncpasswd -f > '$out'" /dev/null >/dev/null 2>&1
-    [ -s "$out" ] && return 0
-  fi
-  return 1
+  ( umask 077
+    if printf '%s\n%s\n' "$pw" "$pw" | script -qec "tigervncpasswd '$out'" /dev/null >/dev/null 2>&1; then
+      :
+    fi
+  )
+  [ -f "$out" ] || return 1
+  [ "$(wc -c < "$out")" -eq 8 ] || return 2
+  return 0
 }
 
-if make_password_file "probepw1" "$PASSFILE"; then
-  kv "password file created" "yes"
-  kv "password file size"   "$(wc -c < "$PASSFILE") bytes (TigerVNC obfuscated form is 8 bytes)"
-  stat -c 'password file mode=%a owner=%U group=%G' "$PASSFILE"
-else
-  kv "password file created" "FAILED"
+make_password_file "probepw1" "$PASSFILE"; rc=$?
+case "$rc" in
+  0) kv "password file created" "yes (8-byte obfuscated key)" ;;
+  2) kv "password file created" "created but NOT 8 bytes: $(wc -c < "$PASSFILE")" ;;
+  *) kv "password file created" "FAILED" ;;
+esac
+if [ -f "$PASSFILE" ]; then
+  stat -c 'password file mode=%a owner=%U group=%G size=%s' "$PASSFILE"
 fi
 
 RFB_SOCK="$WORK/vnc.sock"
@@ -249,12 +251,14 @@ import os, socket, struct, subprocess, sys
 sock_path, passfile, work = sys.argv[1], sys.argv[2], sys.argv[3]
 
 def des_ecb(key8, data):
+    last = b""
     for extra in ([], ["-provider", "legacy", "-provider", "default"]):
         cmd = ["openssl", "enc", "-des-ecb", "-nopad", *extra, "-K", key8.hex()]
         p = subprocess.run(cmd, input=data, capture_output=True)
+        last = p.stderr
         if p.returncode == 0 and len(p.stdout) == len(data):
             return p.stdout
-    raise RuntimeError("openssl DES unavailable: " + p.stderr.decode("replace"))
+    raise RuntimeError("openssl DES unavailable: " + last.decode("replace"))
 
 def reverse_bits(b):
     return int("{:08b}".format(b)[::-1], 2)
@@ -295,21 +299,22 @@ def try_auth(password):
     return result, f"authentication rejected (SecurityResult={result})"
 
 def write_password_file(path, password):
-    tmp = path + ".tmp"
-    with open(tmp, "wb") as fh:
-        p = subprocess.run(["script", "-qec", f"tigervncpasswd -f > {path}.tmp", "/dev/null"],
-                           input=(password + "\n" + password + "\n").encode(),
-                           capture_output=True)
-    if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
-        return False
+    """Creates the replacement with tigervncpasswd and installs it atomically."""
+    tmp = path + ".new"
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    subprocess.run(
+        ["script", "-qec", f"tigervncpasswd '{tmp}'", "/dev/null"],
+        input=(password + "\n" + password + "\n").encode(),
+        capture_output=True)
+    if not os.path.exists(tmp) or os.path.getsize(tmp) != 8:
+        return False, "tigervncpasswd did not produce an 8-byte file"
     os.replace(tmp, path)          # atomic replacement
-    return True
+    return True, f"replaced atomically, mode={oct(os.stat(path).st_mode & 0o777)}"
 
 print("auth with the ORIGINAL password :", try_auth("probepw1"))
-
-ok = write_password_file(passfile, "probepw2")
-print("password file replaced atomically:", ok)
-print("replacement file mode          :", oct(os.stat(passfile).st_mode & 0o777))
+ok, detail = write_password_file(passfile, "probepw2")
+print("password file replaced          :", ok, "-", detail)
 print("auth with the NEW password      :", try_auth("probepw2"))
 print("auth with the OLD password      :", try_auth("probepw1"))
 PY
@@ -317,96 +322,75 @@ else
   printf '\n<python3 or the RFB socket unavailable: live replacement not functionally tested>\n'
 fi
 
-printf '\n--- probe workdir contents (password files are removed on exit) ---\n'
+printf '\n--- probe workdir (the password file is removed on exit) ---\n'
 ls -la "$WORK" | sed -n '1,20p'
 
 # ---------------------------------------------------------------------------
-section "8. Publishing the evidence (Codespaces only)"
+section "8. Publishing the evidence"
 # ---------------------------------------------------------------------------
+publish_via_git() {
+  # Push the evidence to a branch. Returns 0 on success.
+  local branch="$1" token="$2"
+  (
+    cd "$WORKSPACE_ROOT" || exit 1
+    git config user.email "codespace@users.noreply.github.com"
+    git config user.name "Cloud-Chrome Phase 1 probe"
+    git checkout -B "$branch" >/dev/null 2>&1
+    git add phase1-evidence.txt >/dev/null 2>&1
+    git commit -q -m "chore(phase1): record sandbox probe evidence" >/dev/null 2>&1
+    git push -q origin "HEAD:refs/heads/${branch}" && exit 0
+    git push -q "https://x-access-token:${token}@github.com/${GITHUB_REPOSITORY}.git" \
+      "HEAD:refs/heads/${branch}" && exit 0
+    exit 1
+  )
+}
+
+publish_via_issue() {
+  # Fallback: a repository issue, which anyone with repository access can read.
+  local token="$1" payload resp
+  {
+    echo "## Cloud-Chrome Phase 1 sandbox probe evidence"
+    echo
+    echo '```'
+    cat "$EVIDENCE_FILE"
+    echo '```'
+  } > /tmp/probe-issue.md
+  payload=$(python3 -c 'import json,sys;print(json.dumps({"title":"Phase 1 sandbox probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' /tmp/probe-issue.md)
+  resp=$(curl -fsS -X POST -H "Authorization: Bearer ${token}" \
+      -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+      -d "$payload" \
+      "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt)
+  rc=$?
+  rm -f /tmp/probe-issue.md /tmp/probe-issue-err.txt
+  if [ "$rc" -eq 0 ]; then
+    echo "published as an issue: $(printf '%s' "$resp" | jq -r '.html_url' 2>/dev/null)"
+    return 0
+  fi
+  echo "issue publication failed"
+  return 1
+}
+
 if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
    && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
   branch="${CLOUDCHROME_PROBE_BRANCH:-phase1/evidence}"
-  workspace="${GITHUB_WORKSPACE:-}"
-  # PROBE_GIT_TOKEN, when provided as a Codespaces secret, is preferred: the
-  # built-in Codespaces GITHUB_TOKEN is not always accepted as a git credential.
   git_token="${PROBE_GIT_TOKEN:-$GITHUB_TOKEN}"
-  echo "publish target: branch=$branch workspace=${workspace:-<unset>}"
+  echo "publish target: branch=$branch workspace=$WORKSPACE_ROOT"
   published=false
-  if [ -n "$workspace" ] && [ -d "$workspace/.git" ]; then
-    cp "$EVIDENCE_FILE" "$workspace/phase1-evidence.txt"
-    (
-      cd "$workspace" || exit 1
-      git config user.email "codespace@users.noreply.github.com"
-      git config user.name "Cloud-Chrome Phase 1 probe"
-      git checkout -B "$branch" 2>&1 | tail -2
-      git add phase1-evidence.txt
-      git commit -q -m "chore(phase1): record sandbox probe evidence" 2>&1 | tail -2 || true
-      # Fallback 1: the Codespaces git configuration already carries credentials.
-      if git push -q origin "HEAD:refs/heads/${branch}" 2>&1 | tail -2; then
-        echo "published via 'git push origin'"
-        published=true
-      else
-        echo "'git push origin' failed; trying an explicit token URL"
-        # Fallback 2: explicit token URL.
-        if git push -q "https://x-access-token:${git_token}@github.com/${GITHUB_REPOSITORY}.git" \
-             "HEAD:refs/heads/${branch}" 2>&1 | tail -2; then
-          echo "published via the explicit token URL"
-          published=true
-        fi
-      fi
-    )
-  else
-    echo "no git workspace found at '${workspace}'"
-  fi
-  if [ "$published" != "true" ]; then
-    # Fallback 3: a gist is readable without any further credentials.
-    echo "git publication failed; creating a gist instead"
-    python3 - "$EVIDENCE_FILE" <<'PY' > /tmp/probe-gist.json
-import json, sys
-body = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-print(json.dumps({
-    "description": "Cloud-Chrome Phase 1 sandbox probe evidence",
-    "public": False,
-    "files": {"phase1-evidence.txt": {"content": body}},
-}))
-PY
-    if curl -fsS -X POST -H "Authorization: token ${git_token}" \
-        -H "Accept: application/vnd.github+json" \
-        --data @/tmp/probe-gist.json \
-        https://api.github.com/gists > /tmp/probe-gist-resp.json 2>/tmp/probe-gist-err.txt; then
-      echo "published as a gist: $(jq -r .html_url /tmp/probe-gist-resp.json 2>/dev/null)"
+  if [ -d "$WORKSPACE_ROOT/.git" ]; then
+    cp "$EVIDENCE_FILE" "$WORKSPACE_ROOT/phase1-evidence.txt"
+    if publish_via_git "$branch" "$git_token"; then
+      echo "published via git"
       published=true
-    else
-      echo "gist publication failed: $(head -c 200 /tmp/probe-gist-err.txt)"
     fi
-    rm -f /tmp/probe-gist.json /tmp/probe-gist-resp.json /tmp/probe-gist-err.txt
+  else
+    echo "no git workspace found at '${WORKSPACE_ROOT}'"
   fi
   if [ "$published" != "true" ]; then
-    # Fallback 4: an issue comment on the repository. The Codespaces
-    # GITHUB_TOKEN is documented for API calls on its own repository, and the
-    # comment is readable by anyone with repository access.
-    echo "publishing the evidence as an issue comment"
-    {
-      echo "## Cloud-Chrome Phase 1 sandbox probe evidence"
-      echo
-      echo "Codespace: \`${GITHUB_CODESPACE_NAME:-unknown}\`"
-      echo
-      echo '```'
-      cat "$EVIDENCE_FILE"
-      echo '```'
-    } > /tmp/probe-issue.md
-    issue=$(curl -fsS -X POST -H "Authorization: Bearer ${git_token}" \
-        -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
-        --data "$(python3 -c 'import json,sys;print(json.dumps({"title":"Phase 1 sandbox probe evidence","body":open("/tmp/probe-issue.md",encoding="utf-8",errors="replace").read()}))')" \
-        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt) \
-      && echo "$issue" | jq -r '.html_url' || echo "issue creation failed: $(head -c 200 /tmp/probe-issue-err.txt)"
-    rm -f /tmp/probe-issue.md /tmp/probe-issue-err.txt
+    publish_via_issue "$git_token" && published=true
   fi
   echo "published=$published"
 else
-  echo "publishing not requested (CLOUDCHROME_PROBE_PUBLISH != 1 or no token)"
+  echo "publishing not requested"
 fi
-
-
 
 section "END OF EVIDENCE"
