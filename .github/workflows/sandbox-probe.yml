@@ -1,0 +1,131 @@
+name: sandbox-probe
+
+# Phase 1 experiment: create a REAL GitHub Codespace from this repository and
+# measure the container environment that Chrome would actually run in.
+#
+# This workflow is the only place where the Codespaces platform is exercised.
+# It runs entirely on GitHub-hosted runners; no local Docker and no local
+# tooling are required.
+#
+# The probe invokes the installed binaries directly (Xtigervnc, google-chrome,
+# tigervncpasswd). It is a measurement harness, not runtime architecture.
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine:
+        description: Codespaces machine type
+        type: choice
+        default: basicLinux32gb
+        options:
+          - basicLinux32gb
+          - standardLinux32gb
+
+permissions:
+  contents: read
+  codespaces: write
+
+concurrency:
+  group: sandbox-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe a real Codespace
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      MACHINE: ${{ inputs.machine }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Create the Codespace
+        id: create
+        run: |
+          set -euo pipefail
+          response=$(gh api --method POST "/repos/${REPO}/codespaces" \
+            -f ref=main \
+            -f machine="${MACHINE}" \
+            -f display_title="Cloud-Chrome Phase 1 sandbox probe")
+          name=$(printf '%s' "$response" | jq -r '.name')
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          printf 'Created Codespace: %s\n' "$name"
+
+      - name: Wait for the Codespace to be running
+        run: |
+          set -euo pipefail
+          name="${{ steps.create.outputs.name }}"
+          for i in $(seq 1 120); do
+            state=$(gh api "/repos/${REPO}/codespaces/${name}" --jq '.state')
+            printf 'state=%s\n' "$state"
+            case "$state" in
+              Running) echo "Codespace is running."; exit 0 ;;
+              Stopped|Unavailable|Deleted)
+                echo "Codespace entered state $state" >&2
+                gh codespace logs -c "$name" 2>&1 | tail -100 || true
+                exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Timed out waiting for the Codespace." >&2
+          gh codespace logs -c "$name" 2>&1 | tail -100 || true
+          exit 1
+
+      - name: Capture the Codespace creation log
+        run: |
+          set -uo pipefail
+          name="${{ steps.create.outputs.name }}"
+          gh codespace logs -c "$name" 2>&1 | tee "$RUNNER_TEMP/codespace-creation.log" || true
+
+      - name: Run the probe inside the Codespace
+        run: |
+          set -uo pipefail
+          name="${{ steps.create.outputs.name }}"
+          out="$RUNNER_TEMP/sandbox-probe.txt"
+          : > "$out"
+          if gh codespace ssh -c "$name" -- bash -s < tests/phase1/sandbox-probe.sh > "$out" 2>&1; then
+            echo "probe completed" >> "$out"
+          else
+            echo "probe returned a non-zero status; retrying with an inline payload" >> "$out"
+            payload=$(base64 < tests/phase1/sandbox-probe.sh | tr -d '\n')
+            gh codespace ssh -c "$name" -- \
+              "echo '$payload' | base64 -d | bash" >> "$out" 2>&1 || echo "inline retry also failed" >> "$out"
+          fi
+          wc -l "$out"
+          cat "$out"
+
+      - name: Publish the evidence
+        run: |
+          set -euo pipefail
+          {
+            echo "## Sandbox probe evidence"
+            echo
+            echo "Codespace: \`${{ steps.create.outputs.name }}\`"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/sandbox-probe.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the evidence artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sandbox-probe-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/sandbox-probe.txt
+            ${{ runner.temp }}/codespace-creation.log
+          if-no-files-found: warn
+
+      - name: Delete the Codespace
+        if: always()
+        run: |
+          set -uo pipefail
+          name="${{ steps.create.outputs.name }}"
+          if [ -n "$name" ]; then
+            gh api --method DELETE "/repos/${REPO}/codespaces/${name}" \
+              && echo "Deleted Codespace $name" \
+              || echo "Could not delete Codespace $name; delete it manually at https://github.com/codespaces"
+          fi

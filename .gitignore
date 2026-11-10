@@ -1,0 +1,30 @@
+# ---------------------------------------------------------------------------
+# Cloud-Chrome — personal browser data must never be committed.
+#
+# The Chrome profile, the GNOME Keyring, the keyring unlock passphrase, the VNC
+# password file, logs and encrypted backups all live under .cloudchrome/ on the
+# Codespaces persistent volume and are never tracked.
+# ---------------------------------------------------------------------------
+.cloudchrome/
+backups/
+
+# Encrypted backups and archives.
+*.age
+*.tar.gz
+*.tar.gz.age
+
+# Logs.
+*.log
+
+# Local secrets and keys.
+*.pem
+*.key
+*.p12
+.env
+.env.*
+
+# Editor / OS noise.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

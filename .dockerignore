@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# Cloud-Chrome — personal browser data, secrets and VCS metadata must never
+# enter a Docker build context. This file is evaluated by the Docker daemon.
+# ---------------------------------------------------------------------------
+
+# VCS metadata and CI definitions are not part of the image.
+.git
+.github
+.gitignore
+.dockerignore
+
+# Persistent runtime data: Chrome profile, GNOME Keyring, keyring passphrase,
+# VNC password file, logs and backups.
+.cloudchrome/
+backups/
+*.age
+*.tar.gz
+*.tar.gz.age
+*.log
+
+# Secrets and local scratch.
+*.pem
+*.key
+*.p12
+.env
+.env.*
+.venv/
+venv/
+
+# Documentation and local planning artefacts.
+docs/
+*.md
+
+# Editor / OS noise.
+.DS_Store
+Thumbs.db

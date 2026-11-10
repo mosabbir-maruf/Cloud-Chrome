@@ -1,0 +1,125 @@
+name: dependency-check
+
+# Detects a newer Google Chrome Stable than the pinned one and opens a
+# reviewable pull request. It NEVER modifies the default branch directly and it
+# never pushes to main.
+#
+# Scope note (Revision 5, D30): only Chrome is auto-updated. TigerVNC, noVNC
+# and age bumps are reported here but are applied deliberately by a human,
+# because they also change a recorded SHA-256 that must be reviewed.
+
+on:
+  schedule:
+    # Weekly, Monday 06:17 UTC.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependency-check
+  cancel-in-progress: false
+
+jobs:
+  chrome:
+    name: Check for a newer Chrome Stable
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Resolve the latest Chrome Stable for linux/amd64
+        id: latest
+        run: |
+          set -euo pipefail
+          . config/versions.env
+          packages=$(curl -fsSL https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages)
+          latest=$(printf '%s\n' "$packages" | awk '
+            $1=="Package:" { inpkg=($2=="google-chrome-stable"); ver=""; fn=""; sh=""; size="" }
+            inpkg && $1=="Version:" && ver=="" { ver=$2 }
+            inpkg && $1=="Filename:" && fn=="" { fn=$2 }
+            inpkg && $1=="SHA256:" && sh=="" { sh=$2 }
+            inpkg && $1=="Size:" && size=="" { size=$2 }
+            inpkg && /^$/ { if (ver!="") { print ver"|"fn"|"sh"|"size }; inpkg=0 }
+            END { if (inpkg && ver!="") print ver"|"fn"|"sh"|"size }')
+          [ -n "$latest" ] || { echo "could not resolve the latest Chrome Stable" >&2; exit 1; }
+          IFS='|' read -r lver lfn lsh lsize <<< "$latest"
+          echo "version=$lver"  >> "$GITHUB_OUTPUT"
+          echo "filename=$lfn" >> "$GITHUB_OUTPUT"
+          echo "sha256=$lsh"    >> "$GITHUB_OUTPUT"
+          echo "size=$lsize"    >> "$GITHUB_OUTPUT"
+          echo "pinned=$CHROME_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with the pinned version
+        id: compare
+        run: |
+          set -euo pipefail
+          . config/versions.env
+          if [ "${{ steps.latest.outputs.version }}" = "$CHROME_VERSION" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Chrome Stable is up to date ($CHROME_VERSION)."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "A newer Chrome Stable is available: ${{ steps.latest.outputs.version }} (pinned: $CHROME_VERSION)."
+          fi
+
+      - name: Report drift for the manually maintained pins
+        run: |
+          set -euo pipefail
+          . config/versions.env
+          {
+            echo "## Manually maintained pins"
+            echo
+            echo "| Component | Pinned | Note |"
+            echo "| --- | --- | --- |"
+            echo "| TigerVNC | $TIGERVNC_VERSION | Ubuntu archive pin; bump deliberately |"
+            echo "| noVNC | $NOVNC_VERSION | Bump deliberately (SHA-256 must be re-recorded) |"
+            echo "| age | $AGE_VERSION | Bump deliberately (SHA-256 must be re-recorded) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open a reviewable pull request
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          NEW_VERSION: ${{ steps.latest.outputs.version }}
+          NEW_FILENAME: ${{ steps.latest.outputs.filename }}
+          NEW_SHA256: ${{ steps.latest.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          branch="chore/chrome-${NEW_VERSION}"
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          {
+            echo ""
+            echo "# Updated by .github/workflows/dependency-check.yml"
+            echo "# New Google Chrome Stable: ${NEW_VERSION}"
+            echo "CHROME_VERSION=${NEW_VERSION}"
+            echo "CHROME_DEB_URL=https://dl.google.com/linux/chrome/deb/${NEW_FILENAME}"
+            echo "CHROME_DEB_SHA256=${NEW_SHA256}"
+          } > /tmp/versions.env.new
+          # Replace only the three Chrome keys, preserving every other line.
+          python3 - <<'PY'
+          import re, pathlib
+          path = pathlib.Path('config/versions.env')
+          text = path.read_text()
+          new = {
+              'CHROME_VERSION': None, 'CHROME_DEB_URL': None, 'CHROME_DEB_SHA256': None,
+          }
+          for line in pathlib.Path('/tmp/versions.env.new').read_text().splitlines():
+              if '=' in line and not line.startswith('#'):
+                  k, v = line.split('=', 1)
+                  new[k] = v
+          for key, value in new.items():
+              text = re.sub(rf'^{key}=.*$', f'{key}={value}', text, flags=re.M)
+          path.write_text(text)
+          PY
+          git add config/versions.env
+          git commit -m "chore(deps): update Chrome Stable to ${NEW_VERSION}"
+          git push --force-with-lease origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore(deps): update Google Chrome Stable to ${NEW_VERSION}" \
+            --body "Automated update proposed by \`dependency-check.yml\`.\n\n- Chrome Stable: \`${NEW_VERSION}\`\n- SHA-256: \`${NEW_SHA256}\`\n\nThe pin is verified by the image build (\`sha256sum -c\`) and asserted by CI.\n\n**Existing Codespaces do not receive this update until their container is rebuilt.**"

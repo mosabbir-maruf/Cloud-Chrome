@@ -1,0 +1,227 @@
+name: ci
+
+# Phase 1 CI: static validation, image build on a GitHub-hosted runner, and
+# in-image dependency verification. No local Docker is required by contributors.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Minimal permissions: this workflow only reads the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: cloud-chrome:phase1
+
+jobs:
+  lint:
+    name: Static validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Shell script lint
+        run: |
+          set -euo pipefail
+          mapfile -t scripts < <(find . -type f -name '*.sh' -not -path './.git/*')
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo "No shell scripts to lint in this phase."
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning "${scripts[@]}"
+
+      - name: Dockerfile lint
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          chmod +x /tmp/hadolint
+          /tmp/hadolint .devcontainer/Dockerfile
+
+      - name: Workflow lint
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/actionlint \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar -C /tmp -xzf /tmp/actionlint
+          /tmp/actionlint
+
+      - name: Validate JSON documents
+        run: |
+          set -euo pipefail
+          jq -e . .devcontainer/devcontainer.json > /dev/null
+          jq -e '.SyncDisabled == true and .BrowserSignin == 0' \
+            .devcontainer/chrome-policies/managed/cloudchrome.json > /dev/null
+          echo "devcontainer.json and the Chrome managed policy are valid JSON."
+
+      - name: Validate version pins
+        run: |
+          set -euo pipefail
+          # Every key must be known, and every checksum must be a 64-char hex digest.
+          allowed='BASE_IMAGE_REPOSITORY|BASE_IMAGE_TAG|BASE_IMAGE_DIGEST|CHROME_VERSION|CHROME_DEB_URL|CHROME_DEB_SHA256|NOVNC_VERSION|NOVNC_URL|NOVNC_SHA256|AGE_VERSION|AGE_URL|AGE_SHA256|TIGERVNC_VERSION|WEBSOCKIFY_VERSION|JQ_VERSION|XFCE4_VERSION|XFCE4_TERMINAL_VERSION|DBUS_X11_VERSION|GNOME_KEYRING_VERSION|LIBSECRET_VERSION|LIBSECRET_TOOLS_VERSION|XDOTOOL_VERSION|FONTS_LIBERATION2_VERSION|FONTS_NOTO_COLOR_EMOJI_VERSION'
+          while IFS= read -r line; do
+            case "$line" in ''|\#*) continue ;; esac
+            key="${line%%=*}"
+            value="${line#*=}"
+            case "$allowed" in
+              *"|$key|"*) ;;
+              *) echo "Unknown key in config/versions.env: $key" >&2; exit 1 ;;
+            esac
+            [ -n "$value" ] || { echo "Empty value for $key" >&2; exit 1; }
+            case "$key" in
+              *_SHA256) [[ "$value" =~ ^[0-9a-f]{64}$ ]] || { echo "Bad SHA-256 for $key" >&2; exit 1; } ;;
+              BASE_IMAGE_DIGEST) [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Bad digest for $key" >&2; exit 1; } ;;
+            esac
+          done < config/versions.env
+          echo "config/versions.env keys and checksums are well formed."
+
+      - name: Validate the configuration file parses as shell
+        run: |
+          set -euo pipefail
+          bash -n .devcontainer/cloudchrome.env
+          ! grep -qiE '(password|passphrase|secret|token)\s*=\s*\S' .devcontainer/cloudchrome.env \
+            || { echo "cloudchrome.env must not contain secret values" >&2; exit 1; }
+          echo ".devcontainer/cloudchrome.env parses and contains no secret values."
+
+  build:
+    name: Build and verify the image
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify the Dockerfile digest matches config/versions.env
+        run: |
+          set -euo pipefail
+          . config/versions.env
+          grep -q "FROM ${BASE_IMAGE_REPOSITORY}:${BASE_IMAGE_TAG}@${BASE_IMAGE_DIGEST}" \
+            .devcontainer/Dockerfile \
+            || { echo "Dockerfile base image does not match config/versions.env" >&2; exit 1; }
+
+      - name: Build the image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg TARGETARCH=amd64 \
+            -f .devcontainer/Dockerfile \
+            -t "$IMAGE_NAME" .
+          size_bytes=$(docker image inspect "$IMAGE_NAME" --format '{{.Size}}')
+          echo "IMAGE_SIZE_BYTES=$size_bytes" | tee -a "$GITHUB_OUTPUT"
+          echo "Image size: $((size_bytes / 1024 / 1024)) MiB"
+          {
+            echo "## Image size"
+            echo
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Uncompressed image size | $((size_bytes / 1024 / 1024)) MiB ($size_bytes bytes) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify installed dependencies inside the image
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/verify-image.sh" <<'VERIFY'
+          set -uo pipefail
+          fail=0
+          . /usr/local/share/cloudchrome/versions.env
+
+          check() { # name expected actual
+            if [ "$2" = "$3" ]; then
+              printf 'ok       %-34s %s\n' "$1" "$3"
+            else
+              printf 'MISMATCH %-34s expected=%s actual=%s\n' "$1" "$2" "$3"
+              fail=1
+            fi
+          }
+
+          printf '=== runtime identity ===\n'
+          printf 'user=%s uid=%s\n' "$(id -un)" "$(id -u)"
+          [ "$(id -un)" = "vscode" ] || { echo "container does not run as vscode" >&2; fail=1; }
+
+          printf '\n=== package versions ===\n'
+          check tigervnc-standalone-server "$TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-standalone-server)"
+          check tigervnc-common            "$TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-common)"
+          check tigervnc-tools             "$TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-tools)"
+          check websockify                 "$WEBSOCKIFY_VERSION" "$(dpkg-query -W -f='${Version}' websockify)"
+          check jq                         "$JQ_VERSION" "$(dpkg-query -W -f='${Version}' jq)"
+          check xfce4                      "$XFCE4_VERSION" "$(dpkg-query -W -f='${Version}' xfce4)"
+          check dbus-x11                   "$DBUS_X11_VERSION" "$(dpkg-query -W -f='${Version}' dbus-x11)"
+          check gnome-keyring              "$GNOME_KEYRING_VERSION" "$(dpkg-query -W -f='${Version}' gnome-keyring)"
+          check libsecret-1-0              "$LIBSECRET_VERSION" "$(dpkg-query -W -f='${Version}' libsecret-1-0)"
+          check libsecret-tools            "$LIBSECRET_TOOLS_VERSION" "$(dpkg-query -W -f='${Version}' libsecret-tools)"
+          check xdotool                    "$XDOTOOL_VERSION" "$(dpkg-query -W -f='${Version}' xdotool)"
+          check fonts-liberation2          "$FONTS_LIBERATION2_VERSION" "$(dpkg-query -W -f='${Version}' fonts-liberation2)"
+          check fonts-noto-color-emoji     "$FONTS_NOTO_COLOR_EMOJI_VERSION" "$(dpkg-query -W -f='${Version}' fonts-noto-color-emoji)"
+
+          printf '\n=== downloaded artefact versions ===\n'
+          # The .deb version carries a Debian revision (e.g. 157.0.8103.50-1);
+          # the browser itself reports the upstream version.
+          check google-chrome "${CHROME_VERSION%-*}" "$(google-chrome --version | sed -E 's#^Google Chrome ([^ ]+).*#\1#')"
+          check age "$AGE_VERSION" "$(age --version | sed -E 's#^age v?([^ ]+).*#\1#')"
+          check noVNC "$NOVNC_VERSION" "$(jq -r .version /usr/local/share/novnc/package.json)"
+
+          printf '\n=== required binaries ===\n'
+          for bin in Xtigervnc tigervncpasswd tigervncconfig websockify google-chrome \
+                     xfce4-session xfwm4 dbus-launch gnome-keyring-daemon secret-tool \
+                     xdotool age age-keygen jq curl sha256sum flock setsid timeout; do
+            if command -v "$bin" > /dev/null 2>&1; then
+              printf 'ok       %-24s %s\n' "$bin" "$(command -v "$bin")"
+            else
+              printf 'MISSING  %-24s\n' "$bin"; fail=1
+            fi
+          done
+
+          printf '\n=== chrome managed policy ===\n'
+          policy=/etc/opt/chrome/policies/managed/cloudchrome.json
+          ls -l "$policy"
+          stat -c 'owner=%U group=%G mode=%a' "$policy"
+          jq -e '.SyncDisabled == true and .BrowserSignin == 0' "$policy" > /dev/null \
+            && echo 'ok       policy content' || { echo 'MISMATCH policy content'; fail=1; }
+          [ -w "$policy" ] && { echo 'policy is writable by the runtime user'; fail=1; } \
+            || echo 'ok       policy is not writable by the runtime user'
+
+          printf '\n=== no personal data or secrets in the image ===\n'
+          for path in /workspaces/.cloudchrome /root/.cloudchrome /home/vscode/.cloudchrome \
+                     /etc/cloudchrome/cloudchrome.env; do
+            if [ -e "$path" ]; then echo "unexpected path in image: $path"; fail=1; fi
+          done
+          if find / -xdev \( -name '*.age' -o -name 'SingletonLock' -o -name 'Login Data' \) \
+               -print -quit 2>/dev/null | grep -q .; then
+            echo 'unexpected browser or backup data in image'; fail=1
+          else
+            echo 'ok       no profile, keyring or backup data in the image'
+          fi
+
+          printf '\n=== result ===\n'
+          [ "$fail" -eq 0 ] && echo 'ALL CHECKS PASSED' || echo 'CHECKS FAILED'
+          exit "$fail"
+          VERIFY
+          docker run --rm -i "$IMAGE_NAME" bash -s < "$RUNNER_TEMP/verify-image.sh"
+
+      - name: Verify no personal data or secrets are tracked
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)\.cloudchrome/|\.age$|\.tar\.gz$|SingletonLock|Login Data' ; then
+            echo "Personal browser data or archives are tracked in git" >&2
+            exit 1
+          fi
+          echo "ok       no personal browser data is tracked"
+
+      - name: Verify the build context excludes personal data
+        run: |
+          set -euo pipefail
+          for pattern in '.cloudchrome/' 'backups/' '*.age' '*.log'; do
+            grep -qxF "$pattern" .dockerignore \
+              || { echo "missing .dockerignore entry: $pattern" >&2; exit 1; }
+          done
+          echo "ok       .dockerignore excludes personal data"
