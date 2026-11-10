@@ -68,7 +68,7 @@ jobs:
         run: |
           set -uo pipefail
           name="${{ steps.create.outputs.name }}"
-          for i in $(seq 1 120); do
+          for _ in $(seq 1 120); do
             state=$(gh api "/repos/${REPO}/codespaces/${name}" --jq '.state' 2>/dev/null || echo unknown)
             printf 'state=%s\n' "$state"
             case "$state" in

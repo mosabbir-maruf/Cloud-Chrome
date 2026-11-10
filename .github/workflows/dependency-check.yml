@@ -46,11 +46,13 @@ jobs:
             END { if (inpkg && ver!="") print ver"|"fn"|"sh"|"size }')
           [ -n "$latest" ] || { echo "could not resolve the latest Chrome Stable" >&2; exit 1; }
           IFS='|' read -r lver lfn lsh lsize <<< "$latest"
-          echo "version=$lver"  >> "$GITHUB_OUTPUT"
-          echo "filename=$lfn" >> "$GITHUB_OUTPUT"
-          echo "sha256=$lsh"    >> "$GITHUB_OUTPUT"
-          echo "size=$lsize"    >> "$GITHUB_OUTPUT"
-          echo "pinned=$CHROME_VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$lver"
+            echo "filename=$lfn"
+            echo "sha256=$lsh"
+            echo "size=$lsize"
+            echo "pinned=$CHROME_VERSION"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Compare with the pinned version
         id: compare
@@ -78,7 +80,6 @@ jobs:
             echo "| noVNC | $NOVNC_VERSION | Bump deliberately (SHA-256 must be re-recorded) |"
             echo "| age | $AGE_VERSION | Bump deliberately (SHA-256 must be re-recorded) |"
           } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Open a reviewable pull request
         if: steps.compare.outputs.changed == 'true'
         env:
