@@ -96,6 +96,29 @@ for group in profile["syscalls"]:
 if socketcall_removed == 0:
     raise SystemExit("the upstream baseline no longer contains the expected socketcall rule")
 
+# --- a second deliberate, scoped deviation ---------------------------------
+# The upstream profile permits a fixed set of personality(2) values: 0
+# (PER_LINUX), 8 (PER_LINUX32), 131072 and 131080 (UNAME26 variants) and
+# 0xFFFFFFFF. It does not permit ADDR_NO_32BIT (524288) on its own, and
+# 0xFFFFFFFF is rejected by the kernel. Without this rule a process cannot
+# disable the 32-bit compatibility entry point, which is the only in-container
+# way to close the int 0x80 path that the seccomp filter does not cover.
+# Only the exact ADDR_NO_32BIT value is added.
+ADDR_NO_32BIT = 0x0040000
+
+profile["syscalls"].append({
+    "names": ["personality"],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [{"index": 0, "value": ADDR_NO_32BIT, "op": "SCMP_CMP_EQ"}],
+    "comment": (
+        "Cloud-Chrome: permits personality(ADDR_NO_32BIT) so that a process can "
+        "disable the 32-bit compatibility syscall entry point (int 0x80), which "
+        "the container's seccomp filter does not cover. The upstream value "
+        "0xFFFFFFFF is rejected by the kernel, so the exact ADDR_NO_32BIT value "
+        "is added instead."
+    ),
+})
+
 profile["syscalls"].extend([
     {
         "names": ["unshare"],

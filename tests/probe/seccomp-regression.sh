@@ -103,8 +103,16 @@ machine = platform.machine()
 # personality(0xFFFFFFFF) includes ADDR_NO_32BIT and is one of the personality
 # values the upstream profile permits.
 if len(sys.argv) > 1 and sys.argv[1] == "no32":
-    old_persona = libc.personality(0xFFFFFFFF)
-    print(f"personality(0xFFFFFFFF) applied, previous value {old_persona}")
+    # ADDR_NO_32BIT on its own: 0xFFFFFFFF is what upstream permits, but the
+    # kernel rejects it, so the profile permits the exact value instead.
+    ADDR_NO_32BIT = 0x0040000
+    ctypes.set_errno(0)
+    old_persona = libc.personality(ADDR_NO_32BIT)
+    applied = old_persona >= 0
+    err = ctypes.get_errno()
+    print("personality(ADDR_NO_32BIT)|%s|previous=%d|errno=%s" % (
+        "APPLIED" if applied else "FAILED", old_persona,
+        errno.errorcode.get(err, "0") if not applied else "0"))
 
 if machine not in ("x86_64", "i686"):
     print(f"socketcall_compat|NOT_APPLICABLE|0|{machine}")
@@ -222,8 +230,12 @@ case "$compat_vsock" in
 esac
 
 # Under ADDR_NO_32BIT the compatibility entry point must be unusable.
+no32_persona=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /personality\(ADDR_NO_32BIT\)/{print $2}' | head -1)
 no32_control=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_INET/{print $2":"$4}' | head -1)
 no32_alg=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_ALG/{print $2":"$4}' | head -1)
+if [ "$no32_persona" != "APPLIED" ]; then
+  fail "personality(ADDR_NO_32BIT) can be applied" "$no32_persona"
+fi
 case "$no32_control" in
   ALLOWED*) fail "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control (still reachable)" ;;
   DENIED*) pass "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control" ;;
