@@ -2,10 +2,9 @@
 #
 # Cloud-Chrome — dev container image.
 #
-# SCOPE: install and pin the runtime dependencies, then validate them.
-# The browser runtime (CLI, supervisor, service lifecycle, auto-start) is
-# deliberately NOT part of this image — that is Phase 2. Nothing here starts a
-# browser, and no credential material is ever baked into the image.
+# SCOPE: install and pin the runtime dependencies, harden the runtime user's
+# privileges, and validate the result. The browser runtime (CLI, supervisor,
+# service lifecycle) is not part of this image yet.
 #
 # Build context is the repository root so that config/versions.env and
 # .devcontainer/chrome-policies/ are reachable; .dockerignore keeps personal
@@ -25,16 +24,14 @@ COPY config/versions.env /tmp/cloudchrome-versions.env
 # ---------------------------------------------------------------------------
 # System packages.
 #
-# The TigerVNC packages, websockify and jq are installed with an exact version
-# requirement: apt fails the build rather than substituting another version.
+# PINNED_* packages are installed with an exact version requirement: apt fails
+# the build rather than substituting another version. TRACKED_* packages are
+# installed from the signed Ubuntu archive without an exact requirement so
+# that archive security updates are picked up without a rebuild.
 #
-# The remaining packages come from the signed Ubuntu archive and deliberately
-# track its security updates; their versions are recorded in
-# config/versions.env and asserted by CI. Pinning them here would break the
-# build on every archive refresh without improving reproducibility of the
-# components this project actually manages. The DL3008 lint rule is therefore
-# disabled for this file in CI, and a separate CI check asserts that the
-# packages Cloud-Chrome manages remain version-pinned here.
+# DL3008 (pin every apt package) is disabled for this file on purpose; CI
+# asserts that the pinned packages stay pinned and that the tracked packages
+# are never older than the version recorded in config/versions.env.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \
@@ -44,11 +41,11 @@ RUN set -eux; \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        "tigervnc-standalone-server=${TIGERVNC_VERSION}" \
-        "tigervnc-common=${TIGERVNC_VERSION}" \
-        "tigervnc-tools=${TIGERVNC_VERSION}" \
-        "websockify=${WEBSOCKIFY_VERSION}" \
-        "jq=${JQ_VERSION}" \
+        "tigervnc-standalone-server=${PINNED_TIGERVNC_VERSION}" \
+        "tigervnc-common=${PINNED_TIGERVNC_VERSION}" \
+        "tigervnc-tools=${PINNED_TIGERVNC_VERSION}" \
+        "websockify=${PINNED_WEBSOCKIFY_VERSION}" \
+        "jq=${PINNED_JQ_VERSION}" \
         xfce4 \
         xfce4-terminal \
         dbus-x11 \
@@ -103,15 +100,15 @@ RUN set -eux; \
     rm -rf /tmp/dl
 
 # ---------------------------------------------------------------------------
-# Chrome managed policy (strict isolation, Rev 5 §5).
+# Chrome managed policy (strict isolation).
 #
 #   SyncDisabled: true  -> Chrome Sync is off by default.
 #   BrowserSignin: 0   -> no browser-level Google account; Google *website*
 #                        sign-in remains available.
 #
-# The file is root-owned and must NOT be writable by the runtime user. It is
-# intentionally NOT removable at runtime: changing isolation is a source-level
-# change followed by a Codespace rebuild.
+# The file is root-owned and must NOT be writable or removable by the runtime
+# user. It is intentionally NOT removable at runtime: changing isolation is a
+# source-level change followed by a Codespace rebuild.
 # ---------------------------------------------------------------------------
 COPY .devcontainer/chrome-policies/managed/cloudchrome.json /etc/opt/chrome/policies/managed/cloudchrome.json
 RUN set -eux; \
@@ -129,9 +126,39 @@ RUN set -eux; \
     if ! id vscode >/dev/null 2>&1; then \
         echo "runtime user 'vscode' is missing from the base image" >&2; \
         exit 1; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Runtime privilege reduction.
+#
+# The base image grants the runtime user unrestricted passwordless root through
+# /etc/sudoers.d/vscode ("vscode ALL=(root) NOPASSWD:ALL"). That would let the
+# runtime user rewrite or delete the managed Chrome policy, so the blanket
+# entry is removed. The sudo binary is kept, but the runtime user holds no
+# sudo rule at all: `sudo -n true` must fail.
+#
+# Everything the image needs is installed at build time, so no runtime package
+# installation is required.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    rm -f /etc/sudoers.d/vscode; \
+    if runuser -u vscode -- sudo -n true 2>/dev/null; then \
+        echo "the runtime user still has passwordless root" >&2; \
+        exit 1; \
     fi; \
-    runuser -u vscode -- test ! -w /etc/opt/chrome/policies/managed/cloudchrome.json; \
-    echo "policy is root-owned and not writable by the runtime user"
+    if runuser -u vscode -- sudo -n -l 2>/dev/null | grep -q "ALL"; then \
+        echo "the runtime user still has an ALL sudo rule" >&2; \
+        exit 1; \
+    fi; \
+    if runuser -u vscode -- test -w /etc/opt/chrome/policies/managed/cloudchrome.json; then \
+        echo "the runtime user can write the managed Chrome policy" >&2; \
+        exit 1; \
+    fi; \
+    if runuser -u vscode -- test -w /etc/opt/chrome/policies/managed; then \
+        echo "the runtime user can replace the managed Chrome policy" >&2; \
+        exit 1; \
+    fi; \
+    echo "runtime user has no sudo rule and cannot modify the managed Chrome policy"
 
 # ---------------------------------------------------------------------------
 # Runtime posture: the container runs as the non-root 'vscode' user.

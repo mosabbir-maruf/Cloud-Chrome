@@ -215,9 +215,8 @@ PASSFILE="$WORK/passwd"
 # a pty is provided when stdin is not one.
 make_password_file() { # $1 = password, $2 = target file
   # TigerVNC stores an 8-byte obfuscated key. tigervncpasswd reads the password
-  # from the terminal, so a pty is used when one is available. The file is
-  # created by tigervncpasswd itself (so it owns the file and applies mode
-  # 0600); the -f form is used as a fallback and truncated to the 8-byte key.
+  # from the terminal, so a pty is used when one is available. The binary key is
+  # never captured in a shell variable: it is written straight to a file.
   local pw="$1" out="$2" raw
   rm -f "$out"
   if command -v script >/dev/null 2>&1; then
@@ -226,10 +225,17 @@ make_password_file() { # $1 = password, $2 = target file
     )
   fi
   if [ ! -s "$out" ]; then
-    raw=$(printf '%s\n%s\n' "$pw" "$pw" | tigervncpasswd -f 2>/dev/null | head -c 8)
-    if [ "${#raw}" -eq 8 ]; then
-      ( umask 077; printf '%s' "$raw" > "$out" )
+    # Fallback: tigervncpasswd -f writes the obfuscated key to stdout. The output
+    # is binary, so it goes to a file and is never held in a shell variable.
+    raw="$out.raw"
+    rm -f "$raw"
+    ( umask 077
+      printf '%s\n%s\n' "$pw" "$pw" | tigervncpasswd -f > "$raw" 2>/dev/null
+    )
+    if [ -s "$raw" ]; then
+      head -c 8 "$raw" > "$out"
     fi
+    rm -f "$raw"
   fi
   [ -f "$out" ] || return 1
   [ "$(wc -c < "$out")" -eq 8 ] || return 2
@@ -254,12 +260,24 @@ XVNC2_PID=$!
 for _ in $(seq 1 40); do [ -S "$RFB_SOCK" ] && break; sleep 0.25; done
 kv "unix RFB socket" "$([ -S "$RFB_SOCK" ] && echo created || echo "NOT created")"
 
-if [ -S "$RFB_SOCK" ] && command -v python3 >/dev/null 2>&1; then
+if [ -S "$RFB_SOCK" ] && command -v python3 >/dev/null 2>&1 ]; then
   printf '\n--- RFB authentication tests (python3, DES via openssl) ---\n'
-  python3 - "$RFB_SOCK" "$PASSFILE" "$WORK" <<'PY'
+  python3 - "$RFB_SOCK" "$PASSFILE" <<'PYEOF'
 import os, shutil, socket, struct, subprocess, sys
 
-sock_path, passfile, work = sys.argv[1], sys.argv[2], sys.argv[3]
+sock_path, passfile = sys.argv[1], sys.argv[2]
+
+
+def read_exact(sock, count):
+    """Read exactly count bytes. A single recv() may return fewer."""
+    buf = b""
+    while len(buf) < count:
+        chunk = sock.recv(count - len(buf))
+        if not chunk:
+            raise EOFError("connection closed after %d of %d bytes" % (len(buf), count))
+        buf += chunk
+    return buf
+
 
 def des_ecb(key8, data):
     last = b""
@@ -271,77 +289,119 @@ def des_ecb(key8, data):
             return p.stdout
     raise RuntimeError("openssl DES unavailable: " + last.decode("replace"))
 
+
 def reverse_bits(b):
     return int("{:08b}".format(b)[::-1], 2)
+
 
 def response_for(password, challenge):
     pw = password.encode("latin-1")[:8].ljust(8, b"\0")
     key = bytes(reverse_bits(x) for x in pw)
     return des_ecb(key, challenge)
 
-def try_auth(password):
-    """Returns (result_code, description). 0 = success."""
+
+def open_authenticated(password):
+    """Authenticate and RETURN THE OPEN SOCKET so the caller can keep using it."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(10)
     s.connect(sock_path)
-    s.recv(12)
+    read_exact(s, 12)                       # server protocol version
     s.sendall(b"RFB 003.008\n")
-    n = s.recv(1)[0]
-    types = s.recv(n)
+    count = read_exact(s, 1)[0]
+    types = read_exact(s, count)
     if 2 not in types:
         s.close()
-        return None, f"VNC auth not offered (types={list(types)})"
-    s.sendall(bytes([2]))
-    challenge = s.recv(16)
+        return None, "VNC auth not offered (types=%r)" % (list(types),)
+    s.sendall(bytes([2]))                   # security type 2 = VNC auth
+    challenge = read_exact(s, 16)
     s.sendall(response_for(password, challenge))
-    result = struct.unpack(">I", s.recv(4))[0]
-    if result == 0:
-        # Keep the session open: this is the "existing connection" case.
-        s.sendall(b"\x01")                       # ClientInit (shared)
-        s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, 16, 16))  # FramebufferUpdateRequest
-        s.settimeout(5)
-        try:
-            alive = len(s.recv(64)) > 0
-        except socket.timeout:
-            alive = False
+    result = struct.unpack(">I", read_exact(s, 4))[0]
+    if result != 0:
         s.close()
-        return 0, f"authenticated; session still responsive after replacement={alive}"
-    s.close()
-    return result, f"authentication rejected (SecurityResult={result})"
+        return None, "rejected (SecurityResult=%d)" % result
+    return s, "authenticated (connection left open)"
+
 
 def write_password_file(path, password):
-    """Creates the replacement with tigervncpasswd and installs it atomically."""
+    """Create the replacement with tigervncpasswd and install it atomically."""
     tmp = path + ".new"
     if os.path.exists(tmp):
         os.unlink(tmp)
     made = False
     if shutil.which("script"):
+        # tigervncpasswd writes the file itself, so it owns the mode.
         subprocess.run(
-            ["script", "-qec", f"tigervncpasswd '{tmp}'", "/dev/null"],
+            ["script", "-qec", "tigervncpasswd '%s'" % tmp, "/dev/null"],
             input=(password + "\n" + password + "\n").encode(),
             capture_output=True)
         made = os.path.exists(tmp) and os.path.getsize(tmp) == 8
     if not made:
-        raw = subprocess.run(
-            ["tigervncpasswd", "-f"],
-            input=(password + "\n" + password + "\n").encode(),
-            capture_output=True).stdout[:8]
-        if len(raw) == 8:
-            with open(tmp, "wb") as fh:
-                fh.write(raw)
+        # Fallback: write the binary key straight to a file, never through a
+        # shell variable, and refuse anything that is not exactly 8 bytes.
+        raw = tmp + ".raw"
+        with open(raw, "wb") as fh:
+            subprocess.run(
+                ["tigervncpasswd", "-f"],
+                input=(password + "\n" + password + "\n").encode(),
+                stdout=fh, stderr=subprocess.DEVNULL)
+        if os.path.exists(raw) and os.path.getsize(raw) >= 8:
+            with open(raw, "rb") as src, open(tmp, "wb") as dst:
+                dst.write(src.read(8))
             os.chmod(tmp, 0o600)
             made = True
+        if os.path.exists(raw):
+            os.unlink(raw)
     if not made:
-        return False, "tigervncpasswd did not produce an 8-byte file"
-    os.replace(tmp, path)          # atomic replacement
-    return True, f"replaced atomically, mode={oct(os.stat(path).st_mode & 0o777)}"
+        return False, "tigervncpasswd did not produce a valid 8-byte password file"
+    os.replace(tmp, path)                    # atomic replacement
+    return True, "replaced atomically, mode=%s" % oct(os.stat(path).st_mode & 0o777)
 
-print("auth with the ORIGINAL password :", try_auth("probepw1"))
-ok, detail = write_password_file(passfile, "probepw2")
-print("password file replaced          :", ok, "-", detail)
-print("auth with the NEW password      :", try_auth("probepw2"))
-print("auth with the OLD password      :", try_auth("probepw1"))
-PY
+
+def request_update(sock):
+    """Ask for a framebuffer update and read the reply header."""
+    sock.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, 16, 16))  # FramebufferUpdateRequest
+    header = read_exact(sock, 4)
+    return struct.unpack(">BBH", header[:4])
+
+
+# 1. authenticate with the original password and KEEP the connection open
+sock, status = open_authenticated("probepw1")
+print("auth with the ORIGINAL password :", status)
+
+if sock is None:
+    print("cannot continue: the original password was not accepted")
+else:
+    # 2. complete the client initialisation and prove the session is live
+    sock.sendall(b"\x01")                   # ClientInit, shared session
+    server_init = read_exact(sock, 24)
+    width, height = struct.unpack(">HH", server_init[:4])
+    print("client initialisation complete : ServerInit %dx%d" % (width, height))
+
+    # 3. atomically replace the password file while the session stays open
+    ok, detail = write_password_file(passfile, "probepw2")
+    print("password file replaced          :", ok, "-", detail)
+
+    # 4. the already-authenticated connection must still work afterwards
+    try:
+        msg_type, _pad, rects = request_update(sock)
+        print("existing connection after replace: still responsive "
+              "(FramebufferUpdate type=%d rects=%d)" % (msg_type, rects))
+    except Exception as exc:                 # noqa: BLE001
+        print("existing connection after replace: FAILED (%s)" % exc)
+    sock.close()
+
+    # 5. a NEW connection must accept the new password
+    s2, st2 = open_authenticated("probepw2")
+    print("auth with the NEW password      :", st2)
+    if s2 is not None:
+        s2.close()
+
+    # 6. a NEW connection must reject the old password
+    s3, st3 = open_authenticated("probepw1")
+    print("auth with the OLD password      :", st3)
+    if s3 is not None:
+        s3.close()
+PYEOF
 else
   printf '\n<python3 or the RFB socket unavailable: live replacement not functionally tested>\n'
 fi

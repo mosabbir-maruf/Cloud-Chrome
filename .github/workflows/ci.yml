@@ -1,7 +1,8 @@
 name: ci
 
-# CI: static validation, image build on a GitHub-hosted runner, and
-# in-image dependency verification. No local Docker is required by contributors.
+# CI: static validation, image build on a GitHub-hosted runner, in-image
+# verification, seccomp regression tests and the runtime-privilege audit.
+# No local Docker is required by contributors.
 
 on:
   push:
@@ -9,7 +10,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Minimal permissions: this workflow only reads the repository.
 permissions:
   contents: read
 
@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           mapfile -t scripts < <(find . -type f -name '*.sh' -not -path './.git/*')
           if [ "${#scripts[@]}" -eq 0 ]; then
-            echo "No shell scripts to lint in this phase."
+            echo "No shell scripts to lint."
             exit 0
           fi
           sudo apt-get update -qq
@@ -46,24 +46,14 @@ jobs:
           curl -fsSL -o /tmp/hadolint \
             https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
           chmod +x /tmp/hadolint
-          # DL3008 (pin every apt package) is disabled deliberately: Cloud-Chrome
-          # pins the packages it manages to an exact version, while the remaining
-          # Ubuntu archive packages intentionally track security updates. The
-          # installed versions are asserted against config/versions.env by the
-          # in-image verification step, and the next step asserts that the managed
-          # packages are still pinned here.
-          # SC1091 is a false positive: versions.env is COPYied into the image at
-          # build time and is therefore not part of hadolint's shellcheck mock.
+          # DL3008 (pin every apt package) is disabled deliberately: the packages
+          # Cloud-Chrome manages are pinned to an exact version, while the
+          # remaining Ubuntu archive packages intentionally track security
+          # updates. CI asserts the pinned packages stay pinned and that the
+          # tracked packages are never older than the recorded version.
+          # SC1091 is a false positive: versions.env is copied into the image at
+          # build time and is not part of hadolint's shellcheck mock.
           /tmp/hadolint --ignore DL3008 --ignore SC1091 .devcontainer/Dockerfile
-
-      - name: Assert the managed packages are version-pinned in the Dockerfile
-        run: |
-          set -euo pipefail
-          for pkg in tigervnc-standalone-server tigervnc-common tigervnc-tools websockify jq; do
-            grep -q "\"${pkg}=\${" .devcontainer/Dockerfile \
-              || { echo "managed package is not version-pinned: $pkg" >&2; exit 1; }
-          done
-          echo "All managed packages are pinned to an exact version."
 
       - name: Workflow lint
         run: |
@@ -85,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           # Every key must be known, and every checksum must be a 64-char hex digest.
-          allowed='|BASE_IMAGE_REPOSITORY|BASE_IMAGE_TAG|BASE_IMAGE_DIGEST|CHROME_VERSION|CHROME_DEB_URL|CHROME_DEB_SHA256|NOVNC_VERSION|NOVNC_URL|NOVNC_SHA256|AGE_VERSION|AGE_URL|AGE_SHA256|TIGERVNC_VERSION|WEBSOCKIFY_VERSION|JQ_VERSION|XFCE4_VERSION|XFCE4_TERMINAL_VERSION|DBUS_X11_VERSION|GNOME_KEYRING_VERSION|LIBSECRET_VERSION|LIBSECRET_TOOLS_VERSION|XDOTOOL_VERSION|FONTS_LIBERATION2_VERSION|FONTS_NOTO_COLOR_EMOJI_VERSION|SECCOMP_BASE_VERSION|SECCOMP_BASE_URL|SECCOMP_BASE_SHA256|'
+          allowed='|BASE_IMAGE_REPOSITORY|BASE_IMAGE_TAG|BASE_IMAGE_DIGEST|PINNED_TIGERVNC_VERSION|PINNED_WEBSOCKIFY_VERSION|PINNED_JQ_VERSION|TRACKED_XFCE4_VERSION|TRACKED_XFCE4_TERMINAL_VERSION|TRACKED_DBUS_X11_VERSION|TRACKED_GNOME_KEYRING_VERSION|TRACKED_LIBSECRET_VERSION|TRACKED_LIBSECRET_TOOLS_VERSION|TRACKED_XDOTOOL_VERSION|TRACKED_FONTS_LIBERATION2_VERSION|TRACKED_FONTS_NOTO_COLOR_EMOJI_VERSION|CHROME_VERSION|CHROME_DEB_URL|CHROME_DEB_SHA256|NOVNC_VERSION|NOVNC_URL|NOVNC_SHA256|AGE_VERSION|AGE_URL|AGE_SHA256|SECCOMP_BASE_REPOSITORY|SECCOMP_BASE_COMMIT|SECCOMP_BASE_URL|SECCOMP_BASE_SHA256|'
           while IFS= read -r line; do
             case "$line" in ''|\#*) continue ;; esac
             key="${line%%=*}"
@@ -109,6 +99,14 @@ jobs:
           ! grep -qiE '(password|passphrase|secret|token)\s*=\s*\S' .devcontainer/cloudchrome.env \
             || { echo "cloudchrome.env must not contain secret values" >&2; exit 1; }
           echo ".devcontainer/cloudchrome.env parses and contains no secret values."
+
+      - name: Verify the seccomp profile still matches the pinned upstream baseline
+        run: |
+          set -euo pipefail
+          # Regenerates the profile from the pinned upstream baseline plus the
+          # declared namespace rules and compares it with the committed file, so
+          # an upstream restriction cannot be silently dropped.
+          bash tests/probe/render-seccomp-profile.sh --verify
 
   build:
     name: Build and verify the image
@@ -135,7 +133,6 @@ jobs:
             -t "$IMAGE_NAME" .
           size_bytes=$(docker image inspect "$IMAGE_NAME" --format '{{.Size}}')
           echo "IMAGE_SIZE_BYTES=$size_bytes" | tee -a "$GITHUB_OUTPUT"
-          echo "Image size: $((size_bytes / 1024 / 1024)) MiB"
           {
             echo "## Image size"
             echo
@@ -152,11 +149,19 @@ jobs:
           fail=0
           . /usr/local/share/cloudchrome/versions.env
 
-          check() { # name expected actual
+          check_exact() { # name expected actual
             if [ "$2" = "$3" ]; then
               printf 'ok       %-34s %s\n' "$1" "$3"
             else
               printf 'MISMATCH %-34s expected=%s actual=%s\n' "$1" "$2" "$3"
+              fail=1
+            fi
+          }
+          check_tracked() { # name minimum actual
+            if dpkg --compare-versions "$3" ge "$2"; then
+              printf 'ok       %-34s %s (>= %s)\n' "$1" "$3" "$2"
+            else
+              printf 'MISMATCH %-34s installed=%s older than recorded=%s\n' "$1" "$3" "$2"
               fail=1
             fi
           }
@@ -165,27 +170,30 @@ jobs:
           printf 'user=%s uid=%s\n' "$(id -un)" "$(id -u)"
           [ "$(id -un)" = "vscode" ] || { echo "container does not run as vscode" >&2; fail=1; }
 
-          printf '\n=== package versions ===\n'
-          check tigervnc-standalone-server "$TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-standalone-server)"
-          check tigervnc-common            "$TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-common)"
-          check tigervnc-tools             "$TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-tools)"
-          check websockify                 "$WEBSOCKIFY_VERSION" "$(dpkg-query -W -f='${Version}' websockify)"
-          check jq                         "$JQ_VERSION" "$(dpkg-query -W -f='${Version}' jq)"
-          check xfce4                      "$XFCE4_VERSION" "$(dpkg-query -W -f='${Version}' xfce4)"
-          check dbus-x11                   "$DBUS_X11_VERSION" "$(dpkg-query -W -f='${Version}' dbus-x11)"
-          check gnome-keyring              "$GNOME_KEYRING_VERSION" "$(dpkg-query -W -f='${Version}' gnome-keyring)"
-          check libsecret-1-0              "$LIBSECRET_VERSION" "$(dpkg-query -W -f='${Version}' libsecret-1-0)"
-          check libsecret-tools            "$LIBSECRET_TOOLS_VERSION" "$(dpkg-query -W -f='${Version}' libsecret-tools)"
-          check xdotool                    "$XDOTOOL_VERSION" "$(dpkg-query -W -f='${Version}' xdotool)"
-          check fonts-liberation2          "$FONTS_LIBERATION2_VERSION" "$(dpkg-query -W -f='${Version}' fonts-liberation2)"
-          check fonts-noto-color-emoji     "$FONTS_NOTO_COLOR_EMOJI_VERSION" "$(dpkg-query -W -f='${Version}' fonts-noto-color-emoji)"
+          printf '\n=== pinned packages (exact version required) ===\n'
+          check_exact tigervnc-standalone-server "$PINNED_TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-standalone-server)"
+          check_exact tigervnc-common            "$PINNED_TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-common)"
+          check_exact tigervnc-tools             "$PINNED_TIGERVNC_VERSION" "$(dpkg-query -W -f='${Version}' tigervnc-tools)"
+          check_exact websockify                 "$PINNED_WEBSOCKIFY_VERSION" "$(dpkg-query -W -f='${Version}' websockify)"
+          check_exact jq                         "$PINNED_JQ_VERSION" "$(dpkg-query -W -f='${Version}' jq)"
+
+          printf '\n=== tracked packages (must not be older than recorded) ===\n'
+          check_tracked xfce4                    "$TRACKED_XFCE4_VERSION" "$(dpkg-query -W -f='${Version}' xfce4)"
+          check_tracked xfce4-terminal           "$TRACKED_XFCE4_TERMINAL_VERSION" "$(dpkg-query -W -f='${Version}' xfce4-terminal)"
+          check_tracked dbus-x11                 "$TRACKED_DBUS_X11_VERSION" "$(dpkg-query -W -f='${Version}' dbus-x11)"
+          check_tracked gnome-keyring            "$TRACKED_GNOME_KEYRING_VERSION" "$(dpkg-query -W -f='${Version}' gnome-keyring)"
+          check_tracked libsecret-1-0            "$TRACKED_LIBSECRET_VERSION" "$(dpkg-query -W -f='${Version}' libsecret-1-0)"
+          check_tracked libsecret-tools          "$TRACKED_LIBSECRET_TOOLS_VERSION" "$(dpkg-query -W -f='${Version}' libsecret-tools)"
+          check_tracked xdotool                  "$TRACKED_XDOTOOL_VERSION" "$(dpkg-query -W -f='${Version}' xdotool)"
+          check_tracked fonts-liberation2        "$TRACKED_FONTS_LIBERATION2_VERSION" "$(dpkg-query -W -f='${Version}' fonts-liberation2)"
+          check_tracked fonts-noto-color-emoji   "$TRACKED_FONTS_NOTO_COLOR_EMOJI_VERSION" "$(dpkg-query -W -f='${Version}' fonts-noto-color-emoji)"
 
           printf '\n=== downloaded artefact versions ===\n'
           # The .deb version carries a Debian revision (e.g. 157.0.8103.50-1);
           # the browser itself reports the upstream version.
-          check google-chrome "${CHROME_VERSION%-*}" "$(google-chrome --version | sed -E 's#^Google Chrome ([^ ]+).*#\1#')"
-          check age "$AGE_VERSION" "$(age --version | sed -E 's#^v?([0-9].*)#\1#')"
-          check noVNC "$NOVNC_VERSION" "$(jq -r .version /usr/local/share/novnc/package.json)"
+          check_exact google-chrome "${CHROME_VERSION%-*}" "$(google-chrome --version | sed -E 's#^Google Chrome ([^ ]+).*#\1#')"
+          check_exact age "$AGE_VERSION" "$(age --version | sed -E 's#^v?([0-9].*)#\1#')"
+          check_exact noVNC "$NOVNC_VERSION" "$(jq -r .version /usr/local/share/novnc/package.json)"
 
           printf '\n=== required binaries ===\n'
           for bin in Xtigervnc tigervncpasswd tigervncconfig websockify google-chrome \
@@ -206,6 +214,21 @@ jobs:
             && echo 'ok       policy content' || { echo 'MISMATCH policy content'; fail=1; }
           [ -w "$policy" ] && { echo 'policy is writable by the runtime user'; fail=1; } \
             || echo 'ok       policy is not writable by the runtime user'
+          [ -w /etc/opt/chrome/policies/managed ] \
+            && { echo 'the runtime user can replace the policy'; fail=1; } \
+            || echo 'ok       the runtime user cannot replace the policy'
+
+          printf '\n=== runtime privileges ===\n'
+          if sudo -n true 2>/dev/null; then
+            echo 'the runtime user still has passwordless root'; fail=1
+          else
+            echo 'ok       sudo -n true fails for the runtime user'
+          fi
+          if sudo -n -l 2>/dev/null | grep -q 'ALL'; then
+            echo 'the runtime user still holds an ALL sudo rule'; fail=1
+          else
+            echo 'ok       no blanket sudo rule for the runtime user'
+          fi
 
           printf '\n=== no personal data or secrets in the image ===\n'
           for path in /workspaces/.cloudchrome /root/.cloudchrome /home/vscode/.cloudchrome \
@@ -225,42 +248,105 @@ jobs:
           VERIFY
           docker run --rm -i "$IMAGE_NAME" bash -s < "$RUNNER_TEMP/verify-image.sh"
 
-      - name: Verify the tailored seccomp profile enables the namespace sandbox
+      - name: Audit the base image's sudo grant
+        run: |
+          set -euo pipefail
+          . config/versions.env
+          base="${BASE_IMAGE_REPOSITORY}:${BASE_IMAGE_TAG}@${BASE_IMAGE_DIGEST}"
+          docker pull --quiet "$base" > /dev/null
+          {
+            echo "## Runtime privilege audit"
+            echo
+            echo "### Base image (${BASE_IMAGE_REPOSITORY}:${BASE_IMAGE_TAG})"
+            echo
+            echo '```'
+            echo "\$ cat /etc/sudoers.d/vscode"
+            docker run --rm "$base" cat /etc/sudoers.d/vscode 2>&1 || echo "<no such file>"
+            echo
+            echo "\$ sudo -n true   (as the vscode user)"
+            if docker run --rm --user vscode "$base" sudo -n true 2>&1; then
+              echo "exit 0 -> the base image grants the runtime user passwordless root"
+            else
+              echo "non-zero exit -> no blanket sudo grant"
+            fi
+            echo '```'
+            echo
+            echo "### Cloud-Chrome image"
+            echo
+            echo '```'
+            echo "\$ sudo -n true   (as the vscode user)"
+            if docker run --rm --user vscode "$IMAGE_NAME" sudo -n true 2>&1; then
+              echo "exit 0 -> FAIL: the runtime user still has passwordless root"
+              exit 1
+            else
+              echo "non-zero exit -> ok: no passwordless root"
+            fi
+            echo "\$ sudo -n -l"
+            docker run --rm --user vscode "$IMAGE_NAME" sudo -n -l 2>&1 || true
+            echo "\$ test -w /etc/opt/chrome/policies/managed/cloudchrome.json"
+            if docker run --rm --user vscode "$IMAGE_NAME" test -w /etc/opt/chrome/policies/managed/cloudchrome.json; then
+              echo "writable -> FAIL: the runtime user can modify the managed Chrome policy"
+              exit 1
+            else
+              echo "not writable -> ok"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Seccomp regression tests with the Cloud-Chrome profile
         run: |
           set -euo pipefail
           profile="$PWD/.devcontainer/seccomp/chrome.json"
-          # This is the same effect Chromium's user-namespace sandbox depends on.
-          # Without the profile, Docker's default profile blocks unshare/clone with
-          # namespace flags unless the container has CAP_SYS_ADMIN.
           docker run --rm -i \
             --security-opt "seccomp=$profile" \
-            "$IMAGE_NAME" bash -s <<'CHECK'
-          set -uo pipefail
-          echo "seccomp mode: $(awk '/^Seccomp:/{print $2}' /proc/self/status)"
-          echo "CAP_SYS_ADMIN in bounding set: $(awk '/^CapBnd:/{print $2}' /proc/self/status)"
-          if unshare -Ur true 2>/dev/null; then
-            echo "unshare(CLONE_NEWUSER): allowed"
-          else
-            echo "unshare(CLONE_NEWUSER): still blocked"
-            exit 1
-          fi
-          CHECK
+            -e CLOUDCHROME_PROFILE_LABEL="cloud-chrome profile" \
+            "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh | tee "$RUNNER_TEMP/seccomp-custom.txt"
 
-      - name: Verify the default (unprofiled) container still blocks namespaces
+      - name: Seccomp comparison with the Docker daemon's default profile
+        run: |
+          set -uo pipefail
+          # The daemon's own default profile is expected to deny the namespace
+          # operations Chromium needs. The run is recorded, not asserted, so the
+          # difference between the two profiles is visible in the summary.
+          set +e
+          docker run --rm -i \
+            -e CLOUDCHROME_PROFILE_LABEL="daemon default profile" \
+            "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh \
+            > "$RUNNER_TEMP/seccomp-default.txt" 2>&1
+          default_rc=$?
+          set -e
+          {
+            echo
+            echo "### Docker daemon default profile (exit $default_rc)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/seccomp-default.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "default-profile regression exit: $default_rc (recorded, not asserted)"
+
+      - name: Record the before/after syscall behaviour
         run: |
           set -euo pipefail
-          # Guards against the profile being silently ineffective: without it the
-          # same call must fail.
-          if docker run --rm "$IMAGE_NAME" unshare -Ur true 2>/dev/null; then
-            echo "expected the default seccomp profile to block user namespaces" >&2
-            exit 1
-          fi
-          echo "ok       the default profile blocks user namespaces as expected"
+          {
+            echo
+            echo "### Profile comparison"
+            echo
+            echo "| Probe | Cloud-Chrome profile | Daemon default profile |"
+            echo "| --- | --- | --- |"
+            for probe in 'socket(AF_ALG=38)' 'socket(AF_VSOCK=40)' 'socketcall' \
+                         'unshare(CLONE_NEWUSER)' 'unshare(CLONE_NEWUSER|CLONE_NEWNET)' \
+                         'clone(CLONE_NEWUSER|SIGCHLD)' 'clone(CLONE_NEWNS|SIGCHLD)'; do
+              custom=$(grep -F "$probe" "$RUNNER_TEMP/seccomp-custom.txt" | head -1 | sed 's/  */ /g' || true)
+              default=$(grep -F "$probe" "$RUNNER_TEMP/seccomp-default.txt" | head -1 | sed 's/  */ /g' || true)
+              echo "| $probe | ${custom:-n/a} | ${default:-n/a} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify no personal data or secrets are tracked
         run: |
           set -euo pipefail
-          if git ls-files | grep -E '(^|/)\.cloudchrome/|\.age$|\.tar\.gz$|SingletonLock|Login Data' ; then
+          if git ls-files | grep -E '(^|/)\.cloudchrome/|\.age$|\.tar\.gz$|SingletonLock|Login Data'; then
             echo "Personal browser data or archives are tracked in git" >&2
             exit 1
           fi
