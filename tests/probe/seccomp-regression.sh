@@ -24,7 +24,8 @@ WORK=$(mktemp -d /tmp/seccomp-regression.XXXXXX)
 cleanup() {
   [ -n "${CHROME_PID:-}" ] && kill "$CHROME_PID" 2>/dev/null
   [ -n "${XVNC_PID:-}" ] && kill "$XVNC_PID" 2>/dev/null
-  rm -rf "$WORK"
+  sleep 1
+  rm -rf "$WORK" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -69,12 +70,29 @@ attempt("AF_VSOCK (40)", 40, socket.SOCK_RAW, 0)
 for label, (state, err) in results.items():
     print(f"{label}|{state}|{err}|{errno.errorcode.get(err, '0')}")
 
-# socketcall(2) is the 32-bit x86 multiplexer. It does not exist in the
-# x86_64 syscall table, so the call must report ENOSYS rather than succeed.
-import ctypes
-res = libc.syscall(102, 1, 0, 0)   # 102 == SYS_socketcall on i386
-e = ctypes.get_errno()
-print(f"socketcall(102)|{'ALLOWED' if res >= 0 else 'DENIED'}|{e if res < 0 else 0}|{errno.errorcode.get(e, '0') if res < 0 else '0'}")
+# socketcall(2) is the 32-bit x86 multiplexer. It is NOT part of the x86_64
+# syscall table (where 102 is getuid), so it cannot be invoked here at all.
+# Upstream keeps socketcall in the allow-list because on socketcall ABIs the
+# socket arguments sit behind a pointer and cannot be filtered; the mitigation
+# is to restrict socketpair(2) instead, which is checked below.
+import platform
+machine = platform.machine()
+print(f"socketcall|{'NOT_APPLICABLE' if machine in ('x86_64', 'aarch64') else 'CHECK'}|0|{machine}")
+
+# socketpair(2) is the call upstream restricts, because socketcall(2) cannot
+# be filtered. AF_UNIX (1) must work, other families must not.
+def socketpair_probe(family):
+    try:
+        s1, s2 = socket.socketpair(family, socket.SOCK_STREAM)
+        s1.close()
+        s2.close()
+        return "ALLOWED", 0
+    except OSError as e:
+        return "DENIED", e.errno
+
+for label, family in (("socketpair(AF_UNIX=1)", socket.AF_UNIX), ("socketpair(AF_NETLINK=16)", 16)):
+    state, err = socketpair_probe(family)
+    print(f"{label}|{state}|{err}|{errno.errorcode.get(err, '0')}")
 PY
 )
 echo "$socket_probe" | sed 's/^/      /'
@@ -98,9 +116,16 @@ case "$vsock" in
   ALLOWED*) fail "socket(AF_VSOCK=40) is denied" "$vsock" ;;
 esac
 case "$sockcall" in
-  *ENOSYS*) pass "socketcall is not usable on this ABI" "$sockcall" ;;
-  *DENIED*) pass "socketcall is denied" "$sockcall" ;;
+  *NOT_APPLICABLE*) pass "socketcall does not exist on this ABI" "$sockcall" ;;
   *) note "socketcall" "$sockcall" ;;
+esac
+case "$(echo "$socket_probe" | awk -F'|' '$1 ~ /socketpair\(AF_UNIX/{print $2}')" in
+  ALLOWED) pass "socketpair(AF_UNIX) works" "upstream mitigation for socketcall ABIs" ;;
+  *) fail "socketpair(AF_UNIX) works" "upstream mitigation for socketcall ABIs is broken" ;;
+esac
+case "$(echo "$socket_probe" | awk -F'|' '$1 ~ /socketpair\(AF_NETLINK/{print $2}')" in
+  DENIED*) pass "socketpair(AF_NETLINK) is denied" "upstream mitigation for socketcall ABIs" ;;
+  ALLOWED*) fail "socketpair(AF_NETLINK) is denied" "upstream mitigation for socketcall ABIs is broken" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -126,14 +151,14 @@ CLONE_NEWCGROUP = 0x02000000
 
 mode = sys.argv[1]
 
-def child_result():
+def child_result(child_mode):
     """Run in a forked child; the result is written to fd 3 as an errno."""
     w = os.fdopen(3, "w")
-    if mode.startswith("unshare"):
-        rc = libc.unshare(int(mode.split(":", 1)[1], 0))
+    if child_mode.startswith("unshare"):
+        rc = libc.unshare(int(child_mode.split(":", 1)[1], 0))
         e = ctypes.get_errno() if rc != 0 else 0
     else:
-        pid = libc.syscall(SYS_clone, int(mode.split(":", 1)[1], 0) | signal.SIGCHLD, 0, 0, 0, 0)
+        pid = libc.syscall(SYS_clone, int(child_mode.split(":", 1)[1], 0) | signal.SIGCHLD, 0, 0, 0, 0)
         if pid < 0:
             e = ctypes.get_errno()
         else:
@@ -153,7 +178,7 @@ def run(label, mode):
         os.close(r)
         os.dup2(w, 3)
         os.close(w)
-        child_result()
+        child_result(mode)
     os.close(w)
     data = b""
     while True:
