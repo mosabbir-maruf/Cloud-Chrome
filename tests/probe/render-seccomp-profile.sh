@@ -3,9 +3,9 @@
 # verify that the committed profile still matches it.
 #
 # The profile is the upstream Docker/Moby default profile plus a small, declared
-# set of namespace rules. This script is the single source of truth for that
-# derivation: CI runs it in verify mode, so an upstream restriction that was
-# silently dropped cannot reach the committed file.
+# set of changes. This script is the single source of truth for that derivation:
+# CI runs it in verify mode, so an upstream restriction that was silently
+# dropped cannot reach the committed file.
 #
 # Usage:
 #   render-seccomp-profile.sh --write    # (re)generate .devcontainer/seccomp/chrome.json
@@ -32,6 +32,15 @@ echo "==> fetching the pinned upstream baseline"
 curl -fsSL --retry 3 -o "$WORK/baseline.json" "$SECCOMP_BASE_URL"
 echo "${SECCOMP_BASE_SHA256}  $WORK/baseline.json" | sha256sum -c -
 
+# --render-baseline writes the upstream baseline unchanged, so CI can measure
+# the behaviour the Cloud-Chrome profile replaces.
+if [ "$mode" = "--render-baseline" ]; then
+  [ -n "${2:-}" ] || { echo "usage: $0 --render-baseline <output>" >&2; exit 2; }
+  cp "$WORK/baseline.json" "$2"
+  echo "==> wrote the unmodified upstream baseline to $2"
+  exit 0
+fi
+
 echo "==> rendering the profile"
 python3 - "$WORK/baseline.json" "$WORK/rendered.json" <<'PY'
 import json, sys
@@ -41,21 +50,23 @@ with open(baseline_path, encoding="utf-8") as fh:
     profile = json.load(fh)
 
 # Linux namespace flags (uapi/linux/sched.h).
-CLONE_NEWNS   = 0x00020000
-CLONE_NEWUTS  = 0x04000000
-CLONE_NEWIPC  = 0x08000000
-CLONE_NEWUSER = 0x10000000
-CLONE_NEWPID  = 0x20000000
-CLONE_NEWNET  = 0x40000000
+CLONE_NEWNS     = 0x00020000
+CLONE_NEWUTS    = 0x04000000
+CLONE_NEWIPC    = 0x08000000
+CLONE_NEWUSER   = 0x10000000
+CLONE_NEWPID    = 0x20000000
+CLONE_NEWNET    = 0x40000000
 CLONE_NEWCGROUP = 0x02000000
 
-# The low 16 bits of clone(2)/unshare(2) carry the termination signal.
-SIGNAL_MASK = 0x0000FFFF
+# The low 8 bits of clone(2)/unshare(2) carry the termination signal (CSIGNAL).
+# Only those 8 bits are signal bits; the rest of the low 16 bits are other
+# clone flags (CLONE_VM is 0x100) and must NOT be permitted here.
+CSIGNAL = 0x000000FF
 
 # Chromium's namespace sandbox (sandbox/linux/services/namespace_sandbox.cc):
 #   kSupportedTypes[] = {CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET}
 # and it never calls setns().
-CLONE_ALLOWED = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET
+CLONE_ALLOWED   = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET
 UNSHARE_ALLOWED = CLONE_NEWUSER
 
 # The upstream baseline expresses "these bits must be zero" with
@@ -65,8 +76,25 @@ UNSHARE_ALLOWED = CLONE_NEWUSER
 def complement(allowed):
     return (1 << 64) - 1 - allowed
 
-mask_clone = complement(CLONE_ALLOWED | SIGNAL_MASK)
+mask_clone   = complement(CLONE_ALLOWED | CSIGNAL)
 mask_unshare = complement(UNSHARE_ALLOWED)
+
+# --- deliberate, scoped deviation from the upstream baseline ---------------
+# The upstream baseline keeps socketcall(2) in the generic allow-list because on
+# socketcall ABIs the socket arguments sit behind a pointer and cannot be
+# filtered. That leaves an x86_64 process able to reach the socket families the
+# baseline blocks, through the i386 compatibility entry point (int 0x80).
+# This image is amd64-only, so the 32-bit compatibility path is removed here:
+# socketcall is dropped from the allow-list. The loss of 32-bit compatibility
+# is deliberate and is recorded in docs/SECURITY.md.
+socketcall_removed = 0
+for group in profile["syscalls"]:
+    names = group.get("names") or []
+    if "socketcall" in names and group.get("action") == "SCMP_ACT_ALLOW" and not group.get("args"):
+        group["names"] = [n for n in names if n != "socketcall"]
+        socketcall_removed += 1
+if socketcall_removed == 0:
+    raise SystemExit("the upstream baseline no longer contains the expected socketcall rule")
 
 profile["syscalls"].extend([
     {
@@ -88,8 +116,8 @@ profile["syscalls"].extend([
         "excludes": {"caps": ["CAP_SYS_ADMIN"]},
         "comment": (
             "Cloud-Chrome: permits clone(2) only with Chromium's namespace flags "
-            "(CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET) plus a termination signal, "
-            "which is what the namespace sandbox uses "
+            "(CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET) plus the 8-bit termination "
+            "signal (CSIGNAL), which is what the namespace sandbox uses "
             "(sandbox/linux/services/namespace_sandbox.cc, credentials.cc). "
             "clone3 is still denied with ENOSYS so Chromium falls back to clone(2)."
         ),
@@ -99,8 +127,9 @@ profile["syscalls"].extend([
 with open(out_path, "w", encoding="utf-8") as fh:
     fh.write(json.dumps(profile, indent=2) + "\n")
 
-print(f"    clone mask   = {mask_clone} (allowed flags 0x{CLONE_ALLOWED | SIGNAL_MASK:016x})")
+print(f"    clone mask   = {mask_clone} (allowed flags 0x{CLONE_ALLOWED | CSIGNAL:016x})")
 print(f"    unshare mask = {mask_unshare} (allowed flags 0x{UNSHARE_ALLOWED:016x})")
+print(f"    socketcall entries removed from the upstream allow-list: {socketcall_removed}")
 PY
 
 case "$mode" in
@@ -111,10 +140,10 @@ case "$mode" in
     ;;
   --verify)
     if ! diff -u "$TARGET" "$WORK/rendered.json"; then
-      echo "ERROR: $TARGET does not match the pinned upstream baseline plus the declared rules." >&2
+      echo "ERROR: $TARGET does not match the pinned upstream baseline plus the declared changes." >&2
       exit 1
     fi
-    echo "==> $TARGET matches the pinned upstream baseline plus the declared namespace rules"
+    echo "==> $TARGET matches the pinned upstream baseline plus the declared changes"
     ;;
   *)
     echo "usage: $0 [--write|--verify]" >&2

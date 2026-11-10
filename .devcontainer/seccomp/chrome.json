@@ -371,7 +371,6 @@
         "signalfd4",
         "sigprocmask",
         "sigreturn",
-        "socketcall",
         "splice",
         "stat",
         "stat64",
@@ -1274,7 +1273,7 @@
       "args": [
         {
           "index": 0,
-          "value": 18446744071830437888,
+          "value": 18446744071830503168,
           "op": "SCMP_CMP_MASKED_EQ"
         }
       ],
@@ -1283,7 +1282,7 @@
           "CAP_SYS_ADMIN"
         ]
       },
-      "comment": "Cloud-Chrome: permits clone(2) only with Chromium's namespace flags (CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET) plus a termination signal, which is what the namespace sandbox uses (sandbox/linux/services/namespace_sandbox.cc, credentials.cc). clone3 is still denied with ENOSYS so Chromium falls back to clone(2)."
+      "comment": "Cloud-Chrome: permits clone(2) only with Chromium's namespace flags (CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET) plus the 8-bit termination signal (CSIGNAL), which is what the namespace sandbox uses (sandbox/linux/services/namespace_sandbox.cc, credentials.cc). clone3 is still denied with ENOSYS so Chromium falls back to clone(2)."
     }
   ]
 }

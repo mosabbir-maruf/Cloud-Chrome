@@ -312,12 +312,37 @@ jobs:
             "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh \
             | tee "$RUNNER_TEMP/seccomp-custom.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Seccomp regression with the unmodified upstream baseline
+        run: |
+          set -uo pipefail
+          # The upstream baseline is measured unchanged, so the effect of the
+          # Cloud-Chrome profile (including the removal of the 32-bit socketcall
+          # compatibility path) is demonstrated rather than asserted.
+          set +e
+          bash tests/probe/render-seccomp-profile.sh --render-baseline "$RUNNER_TEMP/upstream-default.json"
+          docker run --rm -i \
+            --security-opt "seccomp=$RUNNER_TEMP/upstream-default.json" \
+            -e CLOUDCHROME_PROFILE_LABEL="upstream baseline (unchanged)" \
+            "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh \
+            > "$RUNNER_TEMP/seccomp-upstream.txt" 2>&1
+          upstream_rc=$?
+          set -e
+          {
+            echo
+            echo "### Unmodified upstream baseline (exit $upstream_rc)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/seccomp-upstream.txt"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "upstream-baseline regression exit: $upstream_rc (recorded, not asserted)"
+
       - name: Seccomp comparison with the Docker daemon's default profile
         run: |
           set -uo pipefail
           # The daemon's own default profile is expected to deny the namespace
           # operations Chromium needs. The run is recorded, not asserted, so the
-          # difference between the two profiles is visible in the summary.
+          # difference between the profiles is visible in the summary.
           set +e
           docker run --rm -i \
             -e CLOUDCHROME_PROFILE_LABEL="daemon default profile" \
@@ -342,16 +367,20 @@ jobs:
             echo
             echo "### Profile comparison"
             echo
-            echo "| Probe | Cloud-Chrome profile | Daemon default profile |"
-            echo "| --- | --- | --- |"
-            for probe in 'socket(AF_ALG=38)' 'socket(AF_VSOCK=40)' 'socketcall' \
+            echo "| Probe | Cloud-Chrome profile | Upstream baseline | Daemon default |"
+            echo "| --- | --- | --- | --- |"
+            for probe in 'socket(AF_ALG=38)' 'socket(AF_VSOCK=40)' 'socketcall_compat(AF_ALG=38)' \
+                         'socketcall_compat(AF_VSOCK=40)' 'socketpair(AF_NETLINK=16)' \
                          'unshare(CLONE_NEWUSER)' 'unshare(CLONE_NEWUSER|CLONE_NEWNET)' \
-                         'clone(CLONE_NEWUSER|SIGCHLD)' 'clone(CLONE_NEWNS|SIGCHLD)'; do
+                         'clone(CLONE_NEWUSER|SIGCHLD)' \
+                         'clone(CLONE_NEWUSER|CLONE_VM|SIGCHLD)' \
+                         'clone(CLONE_NEWUSER|CLONE_PTRACE|SIGCHLD)'; do
               custom=$(grep -F "$probe" "$RUNNER_TEMP/seccomp-custom.txt" | head -1 | sed 's/  */ /g' || true)
+              upstream=$(grep -F "$probe" "$RUNNER_TEMP/seccomp-upstream.txt" | head -1 | sed 's/  */ /g' || true)
               default=$(grep -F "$probe" "$RUNNER_TEMP/seccomp-default.txt" | head -1 | sed 's/  */ /g' || true)
-              echo "| $probe | ${custom:-n/a} | ${default:-n/a} |"
+              echo "| $probe | ${custom:-n/a} | ${upstream:-n/a} | ${default:-n/a} |"
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify no personal data or secrets are tracked
         run: |
