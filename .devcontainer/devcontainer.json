@@ -36,6 +36,6 @@
     }
   },
   "initializeCommand": "cp \"${localWorkspaceFolder}/.devcontainer/seccomp/chrome.json\" /tmp/cloudchrome-seccomp.json && chmod 0644 /tmp/cloudchrome-seccomp.json",
-  "postCreateCommand": "cloudchrome init",
+  "postCreateCommand": "bash tests/probe/runtime-probe.sh || true",
   "postStartCommand": "cloudchrome start --if-needed"
 }
