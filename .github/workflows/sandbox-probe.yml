@@ -21,9 +21,12 @@ on:
           - basicLinux32gb
           - standardLinux32gb
 
+# NOTE: "codespaces" is not a valid GITHUB_TOKEN permission scope, so it cannot
+# be requested here. Whether the default token may call the Codespaces API is
+# determined empirically by the "Create the Codespace" step, which reports the
+# exact HTTP status instead of assuming either outcome.
 permissions:
   contents: read
-  codespaces: write
 
 concurrency:
   group: sandbox-probe
@@ -45,40 +48,46 @@ jobs:
       - name: Create the Codespace
         id: create
         run: |
-          set -euo pipefail
-          response=$(gh api --method POST "/repos/${REPO}/codespaces" \
+          set -uo pipefail
+          body=$(gh api --method POST "/repos/${REPO}/codespaces" \
             -f ref=main \
             -f machine="${MACHINE}" \
-            -f display_title="Cloud-Chrome Phase 1 sandbox probe")
-          name=$(printf '%s' "$response" | jq -r '.name')
+            -f display_title="Cloud-Chrome Phase 1 sandbox probe" 2>&1)
+          status=$?
+          printf '%s\n' "$body" | head -40
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the Codespaces API rejected this token (see the response above)"
+            exit 1
+          fi
+          name=$(printf '%s' "$body" | jq -r '.name // empty')
+          [ -n "$name" ] || { echo "::error::no codespace name in the response"; exit 1; }
           echo "name=$name" >> "$GITHUB_OUTPUT"
           printf 'Created Codespace: %s\n' "$name"
 
       - name: Wait for the Codespace to be running
         run: |
-          set -euo pipefail
+          set -uo pipefail
           name="${{ steps.create.outputs.name }}"
           for i in $(seq 1 120); do
-            state=$(gh api "/repos/${REPO}/codespaces/${name}" --jq '.state')
+            state=$(gh api "/repos/${REPO}/codespaces/${name}" --jq '.state' 2>/dev/null || echo unknown)
             printf 'state=%s\n' "$state"
             case "$state" in
               Running) echo "Codespace is running."; exit 0 ;;
               Stopped|Unavailable|Deleted)
-                echo "Codespace entered state $state" >&2
+                echo "::error::Codespace entered state $state"
                 gh codespace logs -c "$name" 2>&1 | tail -100 || true
                 exit 1 ;;
             esac
             sleep 15
           done
-          echo "Timed out waiting for the Codespace." >&2
-          gh codespace logs -c "$name" 2>&1 | tail -100 || true
+          echo "::error::timed out waiting for the Codespace"
           exit 1
 
       - name: Capture the Codespace creation log
         run: |
           set -uo pipefail
-          name="${{ steps.create.outputs.name }}"
-          gh codespace logs -c "$name" 2>&1 | tee "$RUNNER_TEMP/codespace-creation.log" || true
+          gh codespace logs -c "${{ steps.create.outputs.name }}" 2>&1 \
+            | tee "$RUNNER_TEMP/codespace-creation.log" || true
 
       - name: Run the probe inside the Codespace
         run: |
@@ -89,28 +98,24 @@ jobs:
           if gh codespace ssh -c "$name" -- bash -s < tests/phase1/sandbox-probe.sh > "$out" 2>&1; then
             echo "probe completed" >> "$out"
           else
-            echo "probe returned a non-zero status; retrying with an inline payload" >> "$out"
-            payload=$(base64 < tests/phase1/sandbox-probe.sh | tr -d '\n')
-            gh codespace ssh -c "$name" -- \
-              "echo '$payload' | base64 -d | bash" >> "$out" 2>&1 || echo "inline retry also failed" >> "$out"
+            echo "probe did not complete over SSH; the response is below" >> "$out"
           fi
-          wc -l "$out"
           cat "$out"
 
       - name: Publish the evidence
+        if: always()
         run: |
-          set -euo pipefail
+          set -uo pipefail
           {
             echo "## Sandbox probe evidence"
             echo
-            echo "Codespace: \`${{ steps.create.outputs.name }}\`"
-            echo
             echo '```'
-            cat "$RUNNER_TEMP/sandbox-probe.txt"
+            cat "$RUNNER_TEMP/sandbox-probe.txt" 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the evidence artifact
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sandbox-probe-${{ github.run_id }}
@@ -127,5 +132,5 @@ jobs:
           if [ -n "$name" ]; then
             gh api --method DELETE "/repos/${REPO}/codespaces/${name}" \
               && echo "Deleted Codespace $name" \
-              || echo "Could not delete Codespace $name; delete it manually at https://github.com/codespaces"
+              || echo "::warning::could not delete Codespace $name; delete it at https://github.com/codespaces"
           fi

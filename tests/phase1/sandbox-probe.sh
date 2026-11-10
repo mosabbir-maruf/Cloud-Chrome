@@ -10,9 +10,20 @@
 # part of the runtime architecture, and it must not be mistaken for one.
 #
 # Usage: bash sandbox-probe.sh
-# Output: human-readable evidence on stdout (no secrets are produced).
+# Output: human-readable evidence on stdout, and to the file named by
+# CLOUDCHROME_PROBE_OUTPUT (default: a temporary file that is removed on exit).
+#
+# When CLOUDCHROME_PROBE_PUBLISH=1 and the environment provides GITHUB_TOKEN
+# and GITHUB_REPOSITORY (true inside a Codespace), the evidence file is also
+# pushed to the branch named by CLOUDCHROME_PROBE_BRANCH so it can be read back
+# without any local tooling.
 
 set -uo pipefail
+
+WORK=$(mktemp -d /tmp/cloudchrome-probe.XXXXXX)
+EVIDENCE_FILE="${CLOUDCHROME_PROBE_OUTPUT:-$WORK/evidence.txt}"
+mkdir -p "$(dirname "$EVIDENCE_FILE")"
+exec > >(tee -a "$EVIDENCE_FILE") 2>&1
 
 section() { printf '\n########## %s ##########\n' "$1"; }
 kv() { printf '%-46s %s\n' "$1" "${2:-<empty>}"; }
@@ -118,7 +129,6 @@ google-chrome --version 2>&1 | head -2
 # disabled so the probe never opens a listening socket.
 export HOME="$WORK/home"; mkdir -p "$HOME"
 PROFILE="$WORK/profile"; mkdir -p "$PROFILE"
-Xvnc_pid=""
 
 start_display() {
   Xtigervnc :99 -geometry 1280x800 -depth 24 -SecurityTypes None -rfbport -1 \
@@ -309,5 +319,32 @@ fi
 
 printf '\n--- probe workdir contents (password files are removed on exit) ---\n'
 ls -la "$WORK" | sed -n '1,20p'
+
+# ---------------------------------------------------------------------------
+section "8. Publishing the evidence (Codespaces only)"
+# ---------------------------------------------------------------------------
+if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
+   && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+  branch="${CLOUDCHROME_PROBE_BRANCH:-phase1/evidence}"
+  workspace="${GITHUB_WORKSPACE:-}"
+  if [ -n "$workspace" ] && [ -d "$workspace/.git" ]; then
+    cp "$EVIDENCE_FILE" "$workspace/phase1-evidence.txt"
+    (
+      cd "$workspace" || exit 1
+      git config user.email "codespace@users.noreply.github.com"
+      git config user.name "Cloud-Chrome Phase 1 probe"
+      git checkout -B "$branch"
+      git add phase1-evidence.txt
+      git commit -q -m "chore(phase1): record sandbox probe evidence" || true
+      git push -q "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+        "HEAD:refs/heads/${branch}" && echo "evidence pushed to ${branch}" \
+        || echo "evidence push FAILED"
+    )
+  else
+    echo "no git workspace found at '${workspace}'; evidence not published"
+  fi
+else
+  echo "publishing not requested (CLOUDCHROME_PROBE_PUBLISH != 1)"
+fi
 
 section "END OF EVIDENCE"
