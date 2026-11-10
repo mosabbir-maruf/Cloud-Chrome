@@ -92,7 +92,7 @@ jobs:
         run: |
           set -uo pipefail
           name="${{ steps.create.outputs.name }}"
-          for i in $(seq 1 100); do
+          for _ in $(seq 1 100); do
             state=$(gh api "/user/codespaces/${name}" --jq '.state' 2>/dev/null || echo unknown)
             issues=$(gh api "/repos/${REPO}/issues?state=all&per_page=20" \
               --jq '[.[] | select(.title | test("sandbox probe evidence"))] | length' 2>/dev/null || echo 0)
