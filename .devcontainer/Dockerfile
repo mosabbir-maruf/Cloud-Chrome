@@ -32,8 +32,9 @@ COPY config/versions.env /tmp/cloudchrome-versions.env
 # track its security updates; their versions are recorded in
 # config/versions.env and asserted by CI. Pinning them here would break the
 # build on every archive refresh without improving reproducibility of the
-# components this project actually manages.
-# hadolint ignore=DL3008
+# components this project actually manages. The DL3008 lint rule is therefore
+# disabled for this file in CI, and a separate CI check asserts that the
+# packages Cloud-Chrome manages remain version-pinned here.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \

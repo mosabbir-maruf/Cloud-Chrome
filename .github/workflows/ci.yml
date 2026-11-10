@@ -46,7 +46,24 @@ jobs:
           curl -fsSL -o /tmp/hadolint \
             https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
           chmod +x /tmp/hadolint
-          /tmp/hadolint .devcontainer/Dockerfile
+          # DL3008 (pin every apt package) is disabled deliberately: Cloud-Chrome
+          # pins the packages it manages to an exact version, while the remaining
+          # Ubuntu archive packages intentionally track security updates. The
+          # installed versions are asserted against config/versions.env by the
+          # in-image verification step, and the next step asserts that the managed
+          # packages are still pinned here.
+          # SC1091 is a false positive: versions.env is COPYied into the image at
+          # build time and is therefore not part of hadolint's shellcheck mock.
+          /tmp/hadolint --ignore DL3008 --ignore SC1091 .devcontainer/Dockerfile
+
+      - name: Assert the managed packages are version-pinned in the Dockerfile
+        run: |
+          set -euo pipefail
+          for pkg in tigervnc-standalone-server tigervnc-common tigervnc-tools websockify jq; do
+            grep -q "\"${pkg}=\${" .devcontainer/Dockerfile \
+              || { echo "managed package is not version-pinned: $pkg" >&2; exit 1; }
+          done
+          echo "All managed packages are pinned to an exact version."
 
       - name: Workflow lint
         run: |
