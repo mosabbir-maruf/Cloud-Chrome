@@ -375,7 +375,11 @@ else:
     sock.sendall(b"\x01")                   # ClientInit, shared session
     server_init = read_exact(sock, 24)
     width, height = struct.unpack(">HH", server_init[:4])
-    print("client initialisation complete : ServerInit %dx%d" % (width, height))
+    # ServerInit ends with a variable-length desktop name; it must be consumed
+    # or the following reads are misaligned.
+    name_len = struct.unpack(">I", server_init[20:24])[0]
+    name = read_exact(sock, name_len).decode("latin-1", "replace") if name_len else ""
+    print("client initialisation complete : ServerInit %dx%d name=%r" % (width, height, name))
 
     # 3. atomically replace the password file while the session stays open
     ok, detail = write_password_file(passfile, "probepw2")
