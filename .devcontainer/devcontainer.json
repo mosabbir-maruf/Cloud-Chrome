@@ -24,6 +24,10 @@
       "onAutoForward": "openBrowserOnce"
     }
   },
+  "containerEnv": {
+    "CLOUDCHROME_PERSIST_DIR": "${containerWorkspaceFolder}/.cloudchrome",
+    "CLOUDCHROME_RUNTIME_DIR": "${containerWorkspaceFolder}/.cloudchrome/run"
+  },
   "customizations": {
     "vscode": {
       "settings": {
@@ -31,5 +35,7 @@
       }
     }
   },
-  "initializeCommand": "cp \"${localWorkspaceFolder}/.devcontainer/seccomp/chrome.json\" /tmp/cloudchrome-seccomp.json && chmod 0644 /tmp/cloudchrome-seccomp.json"
+  "initializeCommand": "cp \"${localWorkspaceFolder}/.devcontainer/seccomp/chrome.json\" /tmp/cloudchrome-seccomp.json && chmod 0644 /tmp/cloudchrome-seccomp.json",
+  "postCreateCommand": "cloudchrome init",
+  "postStartCommand": "cloudchrome start --if-needed"
 }

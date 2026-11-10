@@ -8,6 +8,8 @@ carried forward to later phases.
 - Profile derivation and verification: `tests/probe/render-seccomp-profile.sh`.
 - Regression suite: `tests/probe/seccomp-regression.sh`.
 - Platform experiment harness: `tests/probe/sandbox-probe.sh`.
+- Runtime usage, commands and exit codes: `docs/USAGE.md`.
+- Runtime implementation: `bin/cloudchrome` and `lib/cloudchrome/`.
 
 **Evidence status:** every measurement below was taken on **2026-11-10/11** either on a
 GitHub-hosted CI runner or inside a real GitHub Codespaces dev container
@@ -27,10 +29,20 @@ repository issues #1–#9; the final Phase 1.1 run is issue #9.
 | Policy file is root-owned and unwritable | `chown root:root`, `chmod 0644`; asserted at build time and in CI, including that the runtime user can neither write the file **nor** replace it | `.devcontainer/Dockerfile`, `ci.yml` |
 | **No blanket passwordless root** | `/etc/sudoers.d/vscode` removed; `sudo -n true` must fail | `.devcontainer/Dockerfile` |
 | Container runs as a non-root user | `USER vscode`; verified in CI (`user=vscode uid=1000`) | `.devcontainer/Dockerfile` |
-| Only port 6080 is forwarded | `forwardPorts: [6080]` | `.devcontainer/devcontainer.json` |
 | Chromium sandbox enabled | Tailored seccomp profile; verified per renderer | `.devcontainer/seccomp/chrome.json` |
-| No `--no-sandbox` | Never passed; asserted in CI and in the platform probe | `ci.yml`, `tests/probe/seccomp-regression.sh` |
+| No `--no-sandbox` | Never passed; refused by the launch policy; asserted in CI and in the platform probe | `ci.yml`, `lib/cloudchrome/chrome.py`, `tests/probe/seccomp-regression.sh` |
 | No `CAP_SYS_ADMIN` in the container | Never requested; the bounding set is recorded in every probe | `ci.yml`, `tests/probe/seccomp-regression.sh` |
+| Only port 6080 is forwarded | `forwardPorts: [6080]` | `.devcontainer/devcontainer.json` |
+| The raw RFB port is never exposed | TigerVNC runs with `-localhost`; the port table is checked at runtime | `lib/cloudchrome/vnc.py`, `lib/cloudchrome/web.py` |
+| The forwarded port stays private | Never configured as a public port | `.devcontainer/devcontainer.json` |
+| No DevTools or CDP listener | `--remote-debugging-port` and its relatives are refused; the port is checked at runtime | `lib/cloudchrome/chrome.py` |
+| Chrome uses the libsecret password store | `--password-store=gnome-libsecret`; a plaintext store is refused | `lib/cloudchrome/chrome.py` |
+| Chrome never runs with a weakened sandbox | `--no-sandbox` and its relatives are refused; the runtime fails closed instead | `lib/cloudchrome/chrome.py` |
+| The secret service is verified before Chrome starts | A secret is stored and read back; otherwise Chrome is not started | `lib/cloudchrome/keyring.py` |
+| No user-supplied Chrome flags | The argument vector is assembled in one place and checked against a forbidden list | `lib/cloudchrome/chrome.py` |
+| The VNC password file is private | Mode 0600, owned by the runtime user; the runtime refuses a loose file | `lib/cloudchrome/vnc.py` |
+| The keyring passphrase is private | Mode 0600, never printed, never in the process table | `lib/cloudchrome/keyring.py` |
+| The persistent state is private | Mode 0700 directories; the runtime refuses a wrong owner or mode | `lib/cloudchrome/paths.py` |
 | No personal browser data, secrets or backups in the image or build context | `.dockerignore`, `git ls-files` guard, in-image scan | `.dockerignore`, `ci.yml` |
 
 ### Changing the isolation policy

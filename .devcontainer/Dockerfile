@@ -100,6 +100,26 @@ RUN set -eux; \
     rm -rf /tmp/dl
 
 # ---------------------------------------------------------------------------
+# The Cloud-Chrome runtime.
+#
+# The single CLI entry point is bin/cloudchrome. It is installed together
+# with the implementation package it loads, and /usr/local/bin/cloudchrome is
+# a symlink to it: the launcher contains no logic of its own and delegates to
+# the entry point.
+#
+# The source of truth is the repository; CI asserts that the installed copy
+# is byte for byte identical to it, so the two can never drift apart.
+# ---------------------------------------------------------------------------
+COPY bin/ /usr/local/lib/cloudchrome/bin/
+COPY lib/ /usr/local/lib/cloudchrome/lib/
+RUN set -eux; \
+    chmod 0755 /usr/local/lib/cloudchrome/bin/cloudchrome; \
+    find /usr/local/lib/cloudchrome/lib -type d -exec chmod 0755 {} +; \
+    find /usr/local/lib/cloudchrome/lib -type f -name '*.py' -exec chmod 0644 {} +; \
+    ln -sfn /usr/local/lib/cloudchrome/bin/cloudchrome /usr/local/bin/cloudchrome; \
+    /usr/local/bin/cloudchrome version
+
+# ---------------------------------------------------------------------------
 # Chrome managed policy (strict isolation).
 #
 #   SyncDisabled: true  -> Chrome Sync is off by default.
@@ -111,11 +131,15 @@ RUN set -eux; \
 # source-level change followed by a Codespace rebuild.
 # ---------------------------------------------------------------------------
 COPY .devcontainer/chrome-policies/managed/cloudchrome.json /etc/opt/chrome/policies/managed/cloudchrome.json
+COPY .devcontainer/cloudchrome.env /etc/cloudchrome/cloudchrome.env
 RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \
     install -d -m 0755 -o root -g root /etc/opt/chrome/policies/managed; \
+    install -d -m 0755 -o root -g root /etc/cloudchrome; \
     chown root:root /etc/opt/chrome/policies/managed/cloudchrome.json; \
     chmod 0644 /etc/opt/chrome/policies/managed/cloudchrome.json; \
+    chown root:root /etc/cloudchrome/cloudchrome.env; \
+    chmod 0644 /etc/cloudchrome/cloudchrome.env; \
     jq -e '.SyncDisabled == true and .BrowserSignin == 0' \
         /etc/opt/chrome/policies/managed/cloudchrome.json >/dev/null; \
     install -d -m 0755 -o root -g root /usr/local/share/cloudchrome; \

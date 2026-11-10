@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Cloud-Chrome — the single command-line entry point.
+#
+# Every convenience launcher delegates here; there is no other entry point.
+# The implementation lives in the Python package next to this script
+# (../lib/cloudchrome). Nothing in this file contains policy: it only locates
+# the implementation and hands over the arguments unchanged.
+#
+# Usage: cloudchrome <command> [options]
+#        cloudchrome --help
+
+set -euo pipefail
+
+# Resolve this script through any symlinks so that the implementation
+# directory is found from the real location of the entry point. This makes the
+# same script work from the workspace and from an installed copy.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case "$link" in
+        /*) self=$link ;;
+        *)  self=$(dirname -- "$self")/$link ;;
+    esac
+done
+bin_dir=$(cd -- "$(dirname -- "$self")" && pwd -P)
+app_home=$(cd -- "$bin_dir/.." && pwd -P)
+
+export CLOUDCHROME_HOME=$app_home
+export PYTHONPATH="$app_home/lib${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m cloudchrome.cli "$@"
