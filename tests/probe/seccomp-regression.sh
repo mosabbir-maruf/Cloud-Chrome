@@ -149,8 +149,6 @@ CLONE_NEWPID    = 0x20000000
 CLONE_NEWNET    = 0x40000000
 CLONE_NEWCGROUP = 0x02000000
 
-mode = sys.argv[1]
-
 def child_result(child_mode):
     """Run in a forked child; the result is written to fd 3 as an errno."""
     w = os.fdopen(3, "w")
