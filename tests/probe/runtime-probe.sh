@@ -401,10 +401,45 @@ publish_via_issue() {
     [ "${status}" = "201" ]
 }
 
-if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
-   && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
-    git_token="${PROBE_GIT_TOKEN:-$GITHUB_TOKEN}"
-    publish_via_issue "$git_token" || echo "the evidence could not be published"
+publish_via_git() {
+    # The Codespaces token is a REST API credential, not a git credential,
+    # and the container has no repository token by default. The git
+    # credentials of the Codespace do work, so the evidence is committed to a
+    # branch as a second path.
+    local branch="$1"
+    (
+        cd "$REPO_ROOT" || exit 1
+        git config user.email "codespace@users.noreply.github.com"
+        git config user.name "Cloud-Chrome probe"
+        cp "$EVIDENCE_FILE" "$REPO_ROOT/probe-evidence.txt"
+        git checkout -B "$branch" >/dev/null 2>&1
+        git add probe-evidence.txt >/dev/null 2>&1
+        git commit -q -m "chore(probe): record the runtime probe evidence" >/dev/null 2>&1
+        git push -q origin "HEAD:refs/heads/${branch}" && exit 0
+        exit 1
+    )
+}
+
+published=false
+if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ]; then
+    if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+        git_token="${PROBE_GIT_TOKEN:-$GITHUB_TOKEN}"
+        if publish_via_issue "$git_token"; then
+            published=true
+        fi
+    else
+        echo "no repository token in the container; publishing through git instead"
+    fi
+    if [ "$published" != "true" ]; then
+        branch="${CLOUDCHROME_PROBE_BRANCH:-probe/evidence}"
+        if publish_via_git "$branch"; then
+            echo "published as a branch: $branch"
+            published=true
+        else
+            echo "the evidence could not be published"
+        fi
+    fi
+    echo "published=$published"
 else
     echo "publishing not requested"
 fi
