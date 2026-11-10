@@ -1,6 +1,6 @@
 name: sandbox-probe
 
-# Phase 1 experiment: create a REAL GitHub Codespace from this repository and
+# Experiment: create a REAL GitHub Codespace from this repository and
 # measure the container environment that Chrome would actually run in.
 #
 # This workflow is the only place where the Codespaces platform is exercised.
@@ -29,7 +29,7 @@ on:
 #
 # The maintained alternative needs no secret at all: create a Codespace from a
 # throwaway branch that adds a postCreateCommand invoking
-# tests/phase1/sandbox-probe.sh, then read the evidence from the repository
+# tests/probe/sandbox-probe.sh, then read the evidence from the repository
 # issue the probe publishes. See docs/SECURITY.md section 4.
 permissions:
   contents: read
@@ -58,7 +58,7 @@ jobs:
           body=$(gh api --method POST "/repos/${REPO}/codespaces" \
             -f ref=main \
             -f machine="${MACHINE}" \
-            -f display_title="Cloud-Chrome Phase 1 sandbox probe" 2>&1)
+            -f display_title="Cloud-Chrome sandbox probe" 2>&1)
           status=$?
           printf '%s\n' "$body" | head -40
           if [ "$status" -ne 0 ]; then
@@ -101,7 +101,7 @@ jobs:
           name="${{ steps.create.outputs.name }}"
           out="$RUNNER_TEMP/sandbox-probe.txt"
           : > "$out"
-          if gh codespace ssh -c "$name" -- bash -s < tests/phase1/sandbox-probe.sh > "$out" 2>&1; then
+          if gh codespace ssh -c "$name" -- bash -s < tests/probe/sandbox-probe.sh > "$out" 2>&1; then
             echo "probe completed" >> "$out"
           else
             echo "probe did not complete over SSH; the response is below" >> "$out"

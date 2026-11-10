@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cloud-Chrome — Phase 1 sandbox and TigerVNC compatibility probe.
+# Cloud-Chrome — sandbox and TigerVNC compatibility probe.
 #
 # Runs INSIDE a real GitHub Codespaces dev container and records raw evidence
 # about the container's namespace, seccomp, LSM and capability layers, about
@@ -358,14 +358,14 @@ section "8. Publishing the evidence"
 publish_via_issue() {
   local token="$1" body_file=/tmp/probe-issue.md json_file=/tmp/probe-issue.json
   {
-    echo "## Cloud-Chrome Phase 1 sandbox probe evidence"
+    echo "## Cloud-Chrome sandbox probe evidence"
     echo
     echo '```'
     # Keep the body comfortably below the GitHub issue size limit.
     head -c 50000 "$EVIDENCE_FILE"
     echo '```'
   } > "$body_file"
-  python3 -c 'import json,sys;print(json.dumps({"title":"Phase 1 sandbox probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' "$body_file" > "$json_file"
+  python3 -c 'import json,sys;print(json.dumps({"title":"Cloud-Chrome sandbox probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' "$body_file" > "$json_file"
   status=$(curl -sS -o /tmp/probe-issue-resp.json -w '%{http_code}' -X POST \
       -H "Authorization: Bearer ${token}" \
       -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
@@ -386,10 +386,10 @@ publish_via_git() {
   (
     cd "$WORKSPACE_ROOT" || exit 1
     git config user.email "codespace@users.noreply.github.com"
-    git config user.name "Cloud-Chrome Phase 1 probe"
+    git config user.name "Cloud-Chrome probe"
     git checkout -B "$branch" >/dev/null 2>&1
-    git add phase1-evidence.txt >/dev/null 2>&1
-    git commit -q -m "chore(phase1): record sandbox probe evidence" >/dev/null 2>&1
+    git add probe-evidence.txt >/dev/null 2>&1
+    git commit -q -m "chore(probe): record sandbox probe evidence" >/dev/null 2>&1
     git push -q origin "HEAD:refs/heads/${branch}" && exit 0
     git push -q "https://x-access-token:${token}@github.com/${GITHUB_REPOSITORY}.git" \
       "HEAD:refs/heads/${branch}" && exit 0
@@ -399,7 +399,7 @@ publish_via_git() {
 
 if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
    && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
-  branch="${CLOUDCHROME_PROBE_BRANCH:-phase1/evidence}"
+  branch="${CLOUDCHROME_PROBE_BRANCH:-probe/evidence}"
   git_token="${PROBE_GIT_TOKEN:-$GITHUB_TOKEN}"
   echo "publish target: branch=$branch workspace=$WORKSPACE_ROOT"
   published=false
@@ -407,7 +407,7 @@ if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
     published=true
   fi
   if [ "$published" != "true" ] && [ -d "$WORKSPACE_ROOT/.git" ]; then
-    cp "$EVIDENCE_FILE" "$WORKSPACE_ROOT/phase1-evidence.txt"
+    cp "$EVIDENCE_FILE" "$WORKSPACE_ROOT/probe-evidence.txt"
     if publish_via_git "$branch" "$git_token"; then
       echo "published via git"
       published=true

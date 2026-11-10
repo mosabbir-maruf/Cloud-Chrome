@@ -1,6 +1,6 @@
 name: ci
 
-# Phase 1 CI: static validation, image build on a GitHub-hosted runner, and
+# CI: static validation, image build on a GitHub-hosted runner, and
 # in-image dependency verification. No local Docker is required by contributors.
 
 on:
@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IMAGE_NAME: cloud-chrome:phase1
+  IMAGE_NAME: cloud-chrome:devcontainer
 
 jobs:
   lint:

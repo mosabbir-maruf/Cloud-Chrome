@@ -5,7 +5,7 @@ experiment, and the raw evidence collected from a real GitHub Codespaces dev con
 
 - Architecture and full design rationale: `docs/ARCHITECTURE.md` (Revision 5).
 - Pinned versions and checksums: `config/versions.env`.
-- Experiment harness: `tests/phase1/sandbox-probe.sh`.
+- Experiment harness: `tests/probe/sandbox-probe.sh`.
 
 **Evidence status:** the measurements in §3 were taken on **2026-11-10/11** in real GitHub
 Codespaces dev containers (region `CentralIndia`, machine `basicLinux32gb` = 2 cores / 8 GB RAM /
@@ -248,7 +248,7 @@ Taking initial snapshot of POLICY_DOMAIN_CHROME policies
 
 ---
 
-## 4. Notes carried forward to Phase 2+ (not implemented in Phase 1)
+## 4. Notes carried forward to later phases (not implemented yet)
 
 - **Backup archive member validation (Phase 3).** A restore treats the archive as untrusted input. The
   design requires a *structured, unambiguous* member-validation strategy: an explicit allow-list of
@@ -269,7 +269,7 @@ Taking initial snapshot of POLICY_DOMAIN_CHROME policies
 - **Chrome argument policy** (Phase 2): no user-supplied Chrome flags; the assembled argument vector is
   asserted against a forbidden-flag list before Chrome is launched.
 - **Re-running the experiment** (any phase): create a branch from `main` that adds a
-  `postCreateCommand` invoking `tests/phase1/sandbox-probe.sh`, create a Codespace from that branch,
+  `postCreateCommand` invoking `tests/probe/sandbox-probe.sh`, create a Codespace from that branch,
   and read the evidence from the resulting repository issue. The probe publishes through the repository
   API (the Codespaces `GITHUB_TOKEN` is a REST credential, not a git credential) and falls back to a
-  git push to `phase1/evidence`.
+  git push to `probe/evidence`.

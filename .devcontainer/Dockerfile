@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# Cloud-Chrome — Phase 1 foundation image.
+# Cloud-Chrome — dev container image.
 #
-# SCOPE (Phase 1): install and pin the runtime dependencies, then validate them.
+# SCOPE: install and pin the runtime dependencies, then validate them.
 # The browser runtime (CLI, supervisor, service lifecycle, auto-start) is
 # deliberately NOT part of this image — that is Phase 2. Nothing here starts a
 # browser, and no credential material is ever baked into the image.
