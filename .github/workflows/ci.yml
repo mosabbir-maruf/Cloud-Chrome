@@ -225,6 +225,38 @@ jobs:
           VERIFY
           docker run --rm -i "$IMAGE_NAME" bash -s < "$RUNNER_TEMP/verify-image.sh"
 
+      - name: Verify the tailored seccomp profile enables the namespace sandbox
+        run: |
+          set -euo pipefail
+          profile="$PWD/.devcontainer/seccomp/chrome.json"
+          # This is the same effect Chromium's user-namespace sandbox depends on.
+          # Without the profile, Docker's default profile blocks unshare/clone with
+          # namespace flags unless the container has CAP_SYS_ADMIN.
+          docker run --rm -i \
+            --security-opt "seccomp=$profile" \
+            "$IMAGE_NAME" bash -s <<'CHECK'
+          set -uo pipefail
+          echo "seccomp mode: $(awk '/^Seccomp:/{print $2}' /proc/self/status)"
+          echo "CAP_SYS_ADMIN in bounding set: $(awk '/^CapBnd:/{print $2}' /proc/self/status)"
+          if unshare -Ur true 2>/dev/null; then
+            echo "unshare(CLONE_NEWUSER): allowed"
+          else
+            echo "unshare(CLONE_NEWUSER): still blocked"
+            exit 1
+          fi
+          CHECK
+
+      - name: Verify the default (unprofiled) container still blocks namespaces
+        run: |
+          set -euo pipefail
+          # Guards against the profile being silently ineffective: without it the
+          # same call must fail.
+          if docker run --rm "$IMAGE_NAME" unshare -Ur true 2>/dev/null; then
+            echo "expected the default seccomp profile to block user namespaces" >&2
+            exit 1
+          fi
+          echo "ok       the default profile blocks user namespaces as expected"
+
       - name: Verify no personal data or secrets are tracked
         run: |
           set -euo pipefail
