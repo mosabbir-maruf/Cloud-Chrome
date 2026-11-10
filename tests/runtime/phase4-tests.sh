@@ -111,7 +111,7 @@ for problem in problems:
 print("problems=%d" % len(problems))
 PY
 
-problem_count=$(grep -c '^PROBLEM' "$WORK/audit.txt" 2>/dev/null || echo 0)
+problem_count=$(awk '/^PROBLEM/{n++} END{print n+0}' "$WORK/audit.txt" 2>/dev/null)
 if [ "$problem_count" -eq 0 ]; then
     pass "the state directory passes the file and directory audit"
 else

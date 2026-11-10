@@ -487,10 +487,8 @@ jobs:
           docker run --rm -i \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
-            -v "$PWD/tests:/tests:ro" \
-            -v "$PWD/bin:/repo/bin:ro" \
-            -v "$PWD/lib:/repo/lib:ro" \
-            "$IMAGE_NAME" bash /tests/runtime/phase2-tests.sh \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/phase2-tests.sh \
             | tee "$RUNNER_TEMP/phase2.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the installed CLI matches the repository
@@ -545,10 +543,8 @@ jobs:
           docker run --rm -i \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
-            -v "$PWD/tests:/tests:ro" \
-            -v "$PWD/bin:/repo/bin:ro" \
-            -v "$PWD/lib:/repo/lib:ro" \
-            "$IMAGE_NAME" bash /tests/runtime/phase3-tests.sh \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/phase3-tests.sh \
             | tee "$RUNNER_TEMP/phase3.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Run the persistence and keyring tests inside the image
@@ -557,10 +553,8 @@ jobs:
           docker run --rm -i \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
-            -v "$PWD/tests:/tests:ro" \
-            -v "$PWD/bin:/repo/bin:ro" \
-            -v "$PWD/lib:/repo/lib:ro" \
-            "$IMAGE_NAME" bash /tests/runtime/phase3-persistence-tests.sh \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/phase3-persistence-tests.sh \
             | tee "$RUNNER_TEMP/phase3-persistence.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
   hardening:
@@ -588,10 +582,8 @@ jobs:
           docker run --rm -i \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
-            -v "$PWD/tests:/tests:ro" \
-            -v "$PWD/bin:/repo/bin:ro" \
-            -v "$PWD/lib:/repo/lib:ro" \
-            "$IMAGE_NAME" bash /tests/runtime/phase4-tests.sh \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/phase4-tests.sh \
             | tee "$RUNNER_TEMP/phase4.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the seccomp regressions still hold

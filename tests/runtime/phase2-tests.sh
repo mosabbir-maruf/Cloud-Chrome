@@ -186,8 +186,8 @@ else
 fi
 
 if [ -s "$WORK/passwd.txt" ]; then
-    new_size=$(stat -c '%s' "$state/vnc.pass")
-    if [ "$new_size" -eq 8 ]; then
+    new_size=$(stat -c '%s' "$state/vnc.pass" 2>/dev/null || echo 0)
+    if [ "$new_size" -eq 8 ] 2>/dev/null; then
         pass "the rotated VNC password file is still 8 bytes" "8 bytes"
     else
         fail "the rotated VNC password file is still 8 bytes" "$new_size bytes"
