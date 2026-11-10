@@ -13,7 +13,7 @@ carried forward to later phases.
 GitHub-hosted CI runner or inside a real GitHub Codespaces dev container
 (region `CentralIndia`, machine `basicLinux32gb` = 2 cores / 8 GB RAM / 32 GB storage,
 kernel `6.8.0-1064-azure`, Ubuntu 24.04.3 LTS). Raw transcripts are published as
-repository issues #1–#6.
+repository issues #1–#8; the Phase 1.1 run is issue #8.
 
 ---
 
@@ -24,13 +24,13 @@ repository issues #1–#6.
 | Chrome Sync disabled | Managed policy `SyncDisabled: true` | `/etc/opt/chrome/policies/managed/cloudchrome.json` |
 | Browser-level Google account disabled | Managed policy `BrowserSignin: 0` | same file |
 | Google **website** sign-in remains available | Not a browser-signin control; verified in the Phase 2 acceptance test | — |
-| Policy file is root-owned and unwritable | `chown root:root`, `chmod 0644`; asserted at build time and in CI, including that the runtime user cannot write the file **or** replace it | `.devcontainer/Dockerfile`, `ci.yml` |
+| Policy file is root-owned and unwritable | `chown root:root`, `chmod 0644`; asserted at build time and in CI, including that the runtime user can neither write the file **nor** replace it | `.devcontainer/Dockerfile`, `ci.yml` |
 | **No blanket passwordless root** | `/etc/sudoers.d/vscode` removed; `sudo -n true` must fail | `.devcontainer/Dockerfile` |
 | Container runs as a non-root user | `USER vscode`; verified in CI (`user=vscode uid=1000`) | `.devcontainer/Dockerfile` |
 | Only port 6080 is forwarded | `forwardPorts: [6080]` | `.devcontainer/devcontainer.json` |
 | Chromium sandbox enabled | Tailored seccomp profile; verified per renderer | `.devcontainer/seccomp/chrome.json` |
 | No `--no-sandbox` | Never passed; asserted in CI and in the platform probe | `ci.yml`, `tests/probe/seccomp-regression.sh` |
-| No `CAP_SYS_ADMIN` | Never requested; the capability bounding set is recorded in every probe | `ci.yml`, `tests/probe/seccomp-regression.sh` |
+| No `CAP_SYS_ADMIN` in the container | Never requested; the bounding set is recorded in every probe | `ci.yml`, `tests/probe/seccomp-regression.sh` |
 | No personal browser data, secrets or backups in the image or build context | `.dockerignore`, `git ls-files` guard, in-image scan | `.dockerignore`, `ci.yml` |
 
 ### Changing the isolation policy
@@ -61,106 +61,165 @@ The strict policy remains in force until the rebuilt image is deployed.
 | Recorded in | `config/versions.env` (`SECCOMP_BASE_*`) |
 
 That baseline replaced the old "allow every address family except AF_VSOCK" rule with a
-**socket-domain allow-list**, and it restricts `socketpair(2)` to AF_UNIX/AF_TIPC. Its
-consequences for this project:
+**socket-domain allow-list**, and it restricts `socketpair(2)` to AF_UNIX/AF_TIPC.
 
-* **AF_ALG (38) is denied** — direct access to the kernel crypto API, the vector behind
-  CVE-2026-31431 (GHSA-2274-3hgr-wxv6), is closed at the container boundary.
-* **AF_VSOCK (40) is denied** — no host/guest communication channel.
-* `socketcall(2)` remains in the upstream allow-list because on socketcall ABIs the
-  socket arguments sit behind a pointer and cannot be filtered. Upstream's mitigation is
-  the `socketpair(2)` restriction, which the baseline carries and which is tested here.
+### Deviations from the upstream baseline
 
-### Derivation and drift protection
+Three, all deliberate, all generated from the pinned baseline by
+`tests/probe/render-seccomp-profile.sh`:
 
-`.devcontainer/seccomp/chrome.json` is **exactly** that baseline plus two declared rules.
-`tests/probe/render-seccomp-profile.sh` is the single source of truth for the derivation:
+| # | Deviation | Why |
+|---|---|---|
+| 1 | `unshare` permitted with `CLONE_NEWUSER` only | Chromium's namespace sandbox calls exactly `unshare(CLONE_NEWUSER)` (`sandbox/linux/services/credentials.cc`) |
+| 2 | `clone` permitted with `CLONE_NEWUSER\|CLONE_NEWPID\|CLONE_NEWNET` plus the 8-bit termination signal | Chromium's namespace sandbox uses `clone(CLONE_NEWUSER\|SIGCHLD)`, `clone(CLONE_NEWPID\|SIGCHLD)` and the namespace set `{CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET}` (`namespace_sandbox.cc`) |
+| 3 | `socketcall` removed from the allow-list, and `personality(ADDR_NO_32BIT)` added | The 32-bit compatibility entry point (`int 0x80`) reaches `socketcall(2)`, whose socket domain sits behind a pointer and therefore cannot be filtered. Removing the allowance and permitting `ADDR_NO_32BIT` are the in-image steps towards closing that path (see §4.4 for the measured outcome) |
 
-* `--write` regenerates the file from the pinned baseline.
-* `--verify` (run by CI) regenerates it in a temporary directory and diffs it against the
-  committed file, so **an upstream restriction cannot be silently dropped**.
+**Deliberate loss of 32-bit compatibility:** this image is amd64-only. No 64-bit program in
+it uses the 32-bit syscall multiplexer, and the profile no longer permits it.
+
+The upstream baseline is otherwise kept **byte for byte**. `render-seccomp-profile.sh
+--verify` regenerates the profile from the pinned baseline and CI diffs it against the
+committed file, so an upstream restriction cannot be dropped silently.
 
 ### Namespace policy — narrowed to what Chromium actually performs
-
-Chromium's namespace sandbox uses exactly these operations (Chromium source,
-`sandbox/linux/services/namespace_sandbox.cc` and `sandbox/linux/services/credentials.cc`):
-
-| Call | Flags |
-|---|---|
-| `unshare` | `CLONE_NEWUSER` only (`credentials.cc`) |
-| `clone` | `CLONE_NEWUSER \| SIGCHLD` (`credentials.cc`) and `CLONE_NEWPID \| SIGCHLD` (`namespace_sandbox.cc`) |
-| namespace set | `CLONE_NEWUSER \| CLONE_NEWPID \| CLONE_NEWNET` (`kSupportedTypes`) |
-
-`setns` is **not** used by the sandbox and is therefore **not permitted**.
-
-The two added rules express this with argument filters. In the upstream JSON dialect
-`SCMP_CMP_MASKED_EQ` with `valueTwo: 0` means "the bits in `value` must be zero", so the
-mask is the complement of the permitted flags:
 
 | Rule | Mask | Permitted |
 |---|---|---|
 | `unshare` | `18446744073441116159` (`~CLONE_NEWUSER`) | `unshare(CLONE_NEWUSER)` and nothing else |
-| `clone` | `18446744071830437888` (`~(CLONE_NEWUSER\|CLONE_NEWPID\|CLONE_NEWNET\|signal bits)`) | `clone(2)` with Chromium's namespace flags plus a termination signal |
+| `clone` | `18446744071830503168` (`~(CLONE_NEWUSER\|CLONE_NEWPID\|CLONE_NEWNET\|CSIGNAL)`) | `clone(2)` with Chromium's namespace flags plus a termination signal |
 
-`clone3` still returns `ENOSYS` (upstream rule), so Chromium falls back to `clone(2)`.
-The container never holds `CAP_SYS_ADMIN`.
+`CSIGNAL` is 8 bits (`0x000000FF`). Only those bits are signal bits; the rest of the low
+16 bits are other clone flags (`CLONE_VM` is `0x100`), and they are **not** permitted
+alongside a namespace flag.
+
+`setns` is **not** permitted: Chromium's sandbox does not call it.
+`clone3` still returns `ENOSYS`, so Chromium falls back to `clone(2)`.
 
 ---
 
-## 3. Measured results
+## 3. Capability model
 
-### 3.1 Namespace and socket behaviour — Cloud-Chrome profile vs the daemon default
+Two different things are called "CAP_SYS_ADMIN" here, and they must not be conflated:
 
-Both runs used the same image and the same probe; only the seccomp filter differed.
+| Scope | Statement |
+|---|---|
+| **Container / initial user namespace** | The container's capability bounding set does **not** contain `CAP_SYS_ADMIN` (`CapBnd=00000000a80425fb` on the CI runner, `00000000a88425fb` in the Codespace). The runtime user holds no capabilities at all (`CapEff=0`) and has no sudo rule. The setuid-sandbox path is therefore unavailable. |
+| **Chromium's isolated child user namespace** | Chromium's namespace sandbox creates a **child user namespace** for each sandboxed process. Inside that namespace the process legitimately holds namespace-scoped capabilities — including `CAP_SYS_ADMIN` — which are scoped to namespaces it just created and grant no privilege over the container or the host. `CapBnd=000001ffffffffff` on a sandboxed renderer reflects exactly that. |
 
-| Probe | Cloud-Chrome profile | Docker daemon default profile |
-|---|---|---|
-| `socket(AF_INET)` (control) | ALLOWED | ALLOWED |
-| `socket(AF_ALG=38)` | **DENIED (EPERM)** | DENIED (EPERM) |
-| `socket(AF_VSOCK=40)` | **DENIED (EPERM)** | DENIED (EPERM) |
-| `socketcall` | not applicable (x86_64) | not applicable (x86_64) |
-| `socketpair(AF_UNIX=1)` | ALLOWED | ALLOWED |
-| `socketpair(AF_NETLINK=16)` | DENIED (EPERM, seccomp) | DENIED (ESOCKTNOSUPPORT, kernel) |
-| `unshare(CLONE_NEWUSER)` | **ALLOWED** | DENIED (EPERM) |
-| `unshare(CLONE_NEWUSER\|CLONE_NEWNET)` | DENIED (EPERM) | DENIED (EPERM) |
-| `unshare(CLONE_NEWNET)` | DENIED (EPERM) | DENIED (EPERM) |
-| `unshare(CLONE_NEWNS)` | DENIED (EPERM) | DENIED (EPERM) |
-| `unshare(CLONE_NEWUSER\|CLONE_NEWIPC\|CLONE_NEWUTS)` | DENIED (EPERM) | DENIED (EPERM) |
-| `clone(CLONE_NEWUSER\|SIGCHLD)` | **ALLOWED** | DENIED (EPERM) |
-| `clone(CLONE_NEWNET\|SIGCHLD)` | DENIED (EPERM) | DENIED (EPERM) |
-| `clone(CLONE_NEWNS\|SIGCHLD)` | DENIED (EPERM) | DENIED (EPERM) |
-| `clone(CLONE_NEWPID\|SIGCHLD)` outside a user namespace | DENIED (EPERM — the kernel requires `CAP_SYS_ADMIN`; the filter permits the flag) | DENIED (EPERM) |
+These are namespace-scoped capabilities, **not** host-level privilege. They are the
+mechanism by which the sandbox works, not an escalation.
 
-Reading of the comparison:
+---
 
-* The daemon's default profile on the CI runner already denies AF_ALG and AF_VSOCK, so the
-  socket behaviour is no longer a differentiator there — pinning the profile to the
-  maintained upstream baseline is what keeps it that way, rather than depending on the
-  daemon's version.
-* The namespace operations are the real difference: the default profile denies them, which
-  is why Chromium could not start before; the Cloud-Chrome profile permits exactly the two
-  calls Chromium makes and denies everything else.
-* `socketpair(AF_NETLINK)` is denied by the **seccomp layer** under the Cloud-Chrome profile
-  and by the **kernel** under the daemon default — evidence that the pinned profile is
-  stricter than the runner's built-in one for that call.
+## 4. Measured results
 
-### 3.2 Chrome sandbox activation
+### 4.1 Namespace and socket behaviour — three profiles
 
-Measured on the CI runner with the Cloud-Chrome profile, and again inside a real
-Codespaces dev container:
+The same image and the same probe, three filters. "Upstream baseline" is the pinned
+Moby profile unchanged; "daemon default" is whatever the Docker daemon applies on its own.
+
+| Probe | Cloud-Chrome profile | Upstream baseline | Daemon default |
+|---|---|---|---|
+| `socket(AF_INET)` (control) | ALLOWED | ALLOWED | ALLOWED |
+| `socket(AF_ALG=38)` | **DENIED (EPERM)** | DENIED (EPERM) | DENIED (EPERM) |
+| `socket(AF_VSOCK=40)` | **DENIED (EPERM)** | DENIED (EPERM) | DENIED (EPERM) |
+| `socketcall` | not applicable (x86_64) | not applicable | not applicable |
+| `socketpair(AF_UNIX=1)` | ALLOWED | ALLOWED | ALLOWED |
+| `socketpair(AF_NETLINK=16)` | DENIED (EPERM, seccomp) | DENIED (EPERM) | DENIED (ESOCKTNOSUPPORT, kernel) |
+| `unshare(CLONE_NEWUSER)` | **ALLOWED** | DENIED (EPERM) | DENIED (EPERM) |
+| `unshare(CLONE_NEWUSER\|CLONE_NEWNET)` | DENIED (EPERM) | DENIED (EPERM) | DENIED (EPERM) |
+| `unshare(CLONE_NEWNET)` | DENIED (EPERM) | DENIED (EPERM) | DENIED (EPERM) |
+| `unshare(CLONE_NEWNS)` | DENIED (EPERM) | DENIED (EPERM) | DENIED (EPERM) |
+| `unshare(CLONE_NEWUSER\|CLONE_NEWIPC\|CLONE_NEWUTS)` | DENIED (EPERM) | DENIED (EPERM) | DENIED (EPERM) |
+| `clone(CLONE_NEWUSER\|SIGCHLD)` | **ALLOWED** | DENIED (EPERM) | DENIED (EPERM) |
+| `clone(CLONE_NEWNET\|SIGCHLD)` | DENIED (EPERM) | DENIED (EPERM) | DENIED (EPERM) |
+| `clone(CLONE_NEWNS\|SIGCHLD)` | DENIED (EPERM) | DENIED (EPERM) | DENIED (EPERM) |
+
+### 4.2 Namespace flags combined with unrelated clone flags
+
+Each of these is denied **by seccomp** (`EPERM`), not by the kernel
+(`EINVAL`/`EFAULT` would mean the kernel refused the combination first):
+
+| Call | Result |
+|---|---|
+| `clone(CLONE_NEWUSER\|CLONE_VM\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_NEWUSER\|CLONE_FS\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_NEWUSER\|CLONE_FILES\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_NEWUSER\|CLONE_SIGHAND\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_NEWUSER\|CLONE_PIDFD\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_NEWUSER\|CLONE_PTRACE\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_NEWUSER\|CLONE_VFORK\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_NEWUSER\|CLONE_PARENT\|SIGCHLD)` | DENIED:EPERM (seccomp) |
+| `clone(CLONE_VM\|CLONE_FS\|SIGCHLD)` (no namespace flag) | **ALLOWED** — thread creation must keep working |
+| `unshare(CLONE_NEWUSER)` | **ALLOWED** — Chromium's operation |
+| `clone(CLONE_NEWUSER\|SIGCHLD)` | **ALLOWED** — Chromium's operation |
+
+Every clone in the suite runs with its own stack, exits immediately and is reaped;
+no child is left behind.
+
+### 4.3 Chrome sandbox activation
+
+Measured on the CI runner and again inside a real Codespaces dev container
+(issue #8):
 
 | Check | Result |
 |---|---|
-| Chrome browser process | alive (CI: pid 93; Codespace: pid 287) |
-| Renderer processes | 8 (CI and Codespace) |
+| Chrome browser process | alive (CI pid 139; Codespace pid 363) |
+| Renderer processes | 8 (both environments) |
 | Every renderer `NoNewPrivs` | `1` |
 | Every renderer `Seccomp` | `2` (container filter + Chromium's own) |
-| Renderer user namespace | distinct from the browser's (`ns/user` inode differs) — the user-namespace sandbox is in effect |
+| Renderer user namespace | distinct from the browser's — the user-namespace sandbox is in effect |
 | `--no-sandbox` in any argv | absent |
-| `CAP_SYS_ADMIN` in the bounding set | absent (`CapBnd=00000000a80425fb` on the CI runner, `00000000a88425fb` in the Codespace) |
+| `CAP_SYS_ADMIN` in the container's bounding set | absent |
 | `unshare(CLONE_NEWUSER)` | `= 0 (user namespace created)` |
+| Regression suite result in the Codespace | 30 checks passed, 0 failed |
 
-### 3.3 Runtime privilege audit
+### 4.4 The AF_ALG compatibility path — measured, and what it means
+
+An x86_64 process can enter the 32-bit syscall ABI with `int 0x80`, where
+`socketcall(2)` hides the socket domain behind a pointer that seccomp cannot filter.
+The probe therefore invokes `socketcall(SYS_SOCKET)` through `int 0x80` with a
+32-bit-compatible argument array in the low 4 GiB, and tries AF_ALG and AF_VSOCK.
+
+| Result | Value |
+|---|---|
+| `socket(AF_ALG)` — direct path | **EPERM** — the seccomp filter denied it |
+| `socketcall_compat(AF_INET, SOCK_STREAM)` — control | **ALLOWED** — the compatibility entry point is reachable |
+| `socketcall_compat(AF_ALG, SOCK_RAW)` | **ESOCKTNOSUPPORT** — the *kernel* refused the family |
+| `socketcall_compat(AF_VSOCK, SOCK_RAW)` | **ESOCKTNOSUPPORT** — the *kernel* refused the family |
+| `personality(ADDR_NO_32BIT)` | **APPLIED** (`previous=0`) — it stops the execution of 32-bit binaries |
+| `socketcall_compat(AF_INET, SOCK_STREAM)` with `ADDR_NO_32BIT` | **still ALLOWED** — the instruction path is not closed by it |
+
+**Enforcement layer, stated precisely:**
+
+* On the **direct** path the AF_ALG restriction is enforced by **seccomp**. The
+  distinction is the errno: the filter answers `EPERM`, while the kernel answers
+  `ESOCKTNOSUPPORT`. The same call through the compatibility path produced
+  `ESOCKTNOSUPPORT`, which proves the kernel — not the filter — handled it.
+* On the **compatibility** path the call reaches the kernel. Neither the
+  container's seccomp filter (the compat syscall architecture is not covered: the
+  profile's `socketcall` removal changed nothing there) nor the AppArmor
+  `docker-default` profile denied it. **Host LSM enforcement could not be
+  demonstrated.**
+* AF_ALG is unreachable on the measured hosts **because those kernels do not
+  provide the AF_ALG socket family**, not because of a policy decision.
+
+**Consequences, recorded honestly:**
+
+1. `socketcall` was removed from the allow-list anyway: it is strictly stronger
+   than upstream, and it removes an allowance that no in-image consumer needs on
+   an amd64-only image.
+2. `personality(ADDR_NO_32BIT)` was permitted so a process can refuse to
+   **execute** 32-bit binaries. It does not close the `int 0x80` instruction
+   path, which is recorded as a measurement rather than asserted.
+3. **Residual risk:** on a host whose kernel *does* provide AF_ALG, the
+   compatibility path would expose AF_ALG despite the profile. This cannot be
+   closed from inside the container on the measured engine; the effective
+   controls are host-level (disable `CONFIG_IA32_EMULATION`) or not using this
+   image on such a host. The Phase 1.1 measurement is published so this is a
+   known, documented limitation rather than an assumption.
+
+### 4.5 Runtime privilege audit
 
 Audited side by side on the CI runner, in the exact pinned base image and in the
 Cloud-Chrome image:
@@ -188,7 +247,7 @@ The base image grants the runtime user unrestricted passwordless root. The Cloud
 image grants nothing, and the runtime user can neither modify nor replace the managed
 Chrome policy. No privileged helper was added to compensate.
 
-### 3.4 TigerVNC password file and live replacement
+### 4.6 TigerVNC password file and live replacement
 
 Measured inside a real Codespaces dev container against the exact packaged
 `tigervnc-standalone-server 1.13.1+dfsg-2build2`:
@@ -198,7 +257,7 @@ password file created                          yes (8-byte obfuscated key)
 password file mode=600 owner=vscode group=vscode size=8
 unix RFB socket                                created
 auth with the ORIGINAL password : authenticated (connection left open)
-client initialisation complete : ServerInit 640x480 name='vscode@codespaces-8d744e'
+client initialisation complete : ServerInit 640x480 name='vscode@codespaces-b0abfd'
 password file replaced          : True - replaced atomically, mode=0o600
 existing connection after replace: still responsive (FramebufferUpdate type=0 rects=1)
 auth with the NEW password      : authenticated (connection left open)
@@ -211,7 +270,7 @@ replacement, a new connection that accepts the new password, and a new connectio
 rejects the old one. The binary key is written through a file and never held in a shell
 variable.
 
-### 3.5 Image
+### 4.7 Image
 
 | Metric | Value |
 |---|---|
@@ -220,7 +279,7 @@ variable.
 
 ---
 
-## 4. Dependency version policy
+## 5. Dependency version policy
 
 Two categories, with different rules:
 
@@ -229,8 +288,8 @@ Two categories, with different rules:
 | `PINNED_*` | **exact** apt version requirement; the build fails rather than substituting another version | installed version must match exactly | `tigervnc-standalone-server`, `tigervnc-common`, `tigervnc-tools`, `websockify`, `jq` |
 | `TRACKED_*` | installed from the signed Ubuntu archive without an exact requirement, so archive security updates are picked up | installed version must **not be older** than the recorded version; a newer version is reported, not failed | `xfce4`, `xfce4-terminal`, `dbus-x11`, `gnome-keyring`, `libsecret-1-0`, `libsecret-tools`, `xdotool`, `fonts-liberation2`, `fonts-noto-color-emoji` |
 
-Downloaded artefacts (Chrome `.deb`, noVNC and age tarballs) are pinned by URL and verified
-against a recorded SHA-256 before anything is unpacked.
+Downloaded artefacts (Chrome `.deb`, noVNC and age tarballs) are pinned by URL and
+verified against a recorded SHA-256 before anything is unpacked.
 
 This is not "full reproducibility" **and** "automatic tracking" at the same time: the
 components Cloud-Chrome drives are reproducible to the exact version, and the operating
@@ -238,7 +297,7 @@ system libraries around them are deliberately allowed to move with the archive.
 
 ---
 
-## 5. SSHD feature — removed
+## 6. SSHD feature — removed
 
 The `ghcr.io/devcontainers/features/sshd:1.1.0` feature was added during Phase 1 so that a
 custom-image Codespace could be reached with `gh codespace ssh` and so that its creation
@@ -253,7 +312,7 @@ same way the probe hook is added.
 
 ---
 
-## 6. Notes carried forward to later phases (not implemented yet)
+## 7. Notes carried forward to later phases (not implemented yet)
 
 - **Backup archive member validation (Phase 3).** A restore treats the archive as untrusted
   input. The design requires a *structured, unambiguous* member-validation strategy: an
@@ -278,7 +337,8 @@ same way the probe hook is added.
 - **Chrome argument policy** (Phase 2): no user-supplied Chrome flags at all; the assembled
   argument vector is asserted against a forbidden-flag list before Chrome is launched.
 - **Re-running the experiment**: create a branch from `main` that adds a `postCreateCommand`
-  invoking `tests/probe/sandbox-probe.sh`, create a Codespace from that branch, and read the
+  invoking `tests/probe/sandbox-probe.sh` (and optionally
+  `tests/probe/seccomp-regression.sh`), create a Codespace from that branch, and read the
   evidence from the repository issue the probe publishes. The `sandbox-probe` workflow does
   the same thing, but needs a repository secret holding a token with the `codespace` scope,
   because `codespaces` is not a valid `GITHUB_TOKEN` permission scope.
