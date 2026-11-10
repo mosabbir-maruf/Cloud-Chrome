@@ -126,8 +126,8 @@ else:
     ctypes.memmove(stub_addr, code, len(code))
     fn = ctypes.CFUNCTYPE(ctypes.c_int)(stub_addr)
 
-    def compat_socket(family):
-        ctypes.memmove(args_addr, struct.pack("<IIII", family, 3, 0, 0), 16)
+    def compat_socket(family, socktype):
+        ctypes.memmove(args_addr, struct.pack("<IIII", family, socktype, 0, 0), 16)
         ret = fn()
         if ret >= 0:
             try:
@@ -138,10 +138,14 @@ else:
         err = -ret
         return "DENIED", err
 
-    for label, family in (("socketcall_compat(AF_INET=2)", 2),
-                          ("socketcall_compat(AF_ALG=38)", 38),
-                          ("socketcall_compat(AF_VSOCK=40)", 40)):
-        state, err = compat_socket(family)
+    # The control is a valid socket call. If it succeeds, the 32-bit
+    # compatibility entry point is reachable and the profile did not block it;
+    # the refusals of the other families are then the kernel's own.
+    for label, family, socktype in (
+            ("socketcall_compat(AF_INET=2,SOCK_STREAM)", 2, 1),
+            ("socketcall_compat(AF_ALG=38,SOCK_RAW)", 38, 3),
+            ("socketcall_compat(AF_VSOCK=40,SOCK_RAW)", 40, 3)):
+        state, err = compat_socket(family, socktype)
         print(f"{label}|{state}|{err}|{errno.errorcode.get(err, '0')}")
 
     # Keep the buffers alive until here.
@@ -174,19 +178,32 @@ case "$(get 'socketpair(AF_NETLINK=16)')" in
   ALLOWED*) fail "socketpair(AF_NETLINK) is denied" "upstream mitigation for socketcall ABIs is broken" ;;
 esac
 
-# The compatibility path: an AF_ALG socket must not be creatable through
-# socketcall(2) either.
-compat_alg=$(get 'socketcall_compat(AF_ALG=38)')
-case "$compat_alg" in
-  DENIED*)
-    pass "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg" ;;
-  ALLOWED*)
-    fail "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg" ;;
-  *)
-    note "AF_ALG via socketcall(2) (int 0x80)" "$compat_alg" ;;
+# The compatibility path. The control decides whether the 32-bit entry point is
+# reachable at all:
+#   * control EPERM  -> the profile blocks the compatibility path (seccomp).
+#   * control ALLOWED-> the compatibility path is reachable, so any refusal of
+#                        AF_ALG below comes from the kernel, not from the filter.
+# Either way AF_ALG must not be creatable.
+compat_control=$(get 'socketcall_compat(AF_INET=2,SOCK_STREAM)')
+compat_alg=$(get 'socketcall_compat(AF_ALG=38,SOCK_RAW)')
+compat_vsock=$(get 'socketcall_compat(AF_VSOCK=40,SOCK_RAW)')
+case "$compat_control" in
+  *EPERM*) pass "the 32-bit socketcall path is blocked by seccomp" "$compat_control" ;;
+  ALLOWED*) note "the 32-bit socketcall path is reachable" "$compat_control (the kernel refuses the families below)" ;;
+  *) note "the 32-bit socketcall path is reachable" "$compat_control" ;;
 esac
-note "socketcall(2) via int 0x80, control AF_INET" "$(get 'socketcall_compat(AF_INET=2)')"
-note "socketcall(2) via int 0x80, AF_VSOCK" "$(get 'socketcall_compat(AF_VSOCK=40)')"
+case "$compat_alg" in
+  ALLOWED*)
+    fail "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg (the compatibility path reaches the kernel)" ;;
+  *EPERM*) pass "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg (seccomp)" ;;
+  DENIED*) pass "AF_ALG is not creatable via socketcall(2) (int 0x80)" "$compat_alg (the kernel does not provide this family)" ;;
+  *) note "AF_ALG via socketcall(2) (int 0x80)" "$compat_alg" ;;
+esac
+case "$compat_vsock" in
+  ALLOWED*) fail "AF_VSOCK is not creatable via socketcall(2) (int 0x80)" "$compat_vsock" ;;
+  DENIED*) pass "AF_VSOCK is not creatable via socketcall(2) (int 0x80)" "$compat_vsock" ;;
+  *) note "AF_VSOCK via socketcall(2) (int 0x80)" "$compat_vsock" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 5-6: namespace operations
