@@ -141,6 +141,13 @@ port; elsewhere it is the local address.
 
 These are documented in [BACKUP.md](BACKUP.md).
 
+The backup is encrypted with age and streamed, so no plaintext archive is
+ever written to disk. The restore is transactional: the previous profile and
+keyring are put back if anything fails.
+
+`prune` requires an explicit retention policy (`--keep N`), shows what it is
+about to delete and never removes the newest backup.
+
 ---
 
 ## Exit codes

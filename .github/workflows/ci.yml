@@ -220,14 +220,22 @@ jobs:
 
           printf '\n=== required binaries ===\n'
           for bin in Xtigervnc tigervncpasswd tigervncconfig websockify google-chrome \
-                     xfce4-session xfwm4 dbus-launch gnome-keyring-daemon secret-tool \
-                     xdotool age age-keygen jq curl sha256sum flock setsid timeout; do
+                     xfce4-session xfwm4 dbus-launch dbus-daemon gnome-keyring-daemon secret-tool \
+                     xdotool age age-keygen jq curl sha256sum flock setsid timeout \
+                     python3 tar; do
             if command -v "$bin" > /dev/null 2>&1; then
               printf 'ok       %-24s %s\n' "$bin" "$(command -v "$bin")"
             else
               printf 'MISSING  %-24s\n' "$bin"; fail=1
             fi
           done
+          # 'script' is only the fallback for the password file; the primary
+          # path is the filter mode of tigervncpasswd.
+          if command -v script > /dev/null 2>&1; then
+            printf 'ok       %-24s %s\n' "script (optional)" "$(command -v script)"
+          else
+            printf 'note     %-24s not installed; the filter mode is used instead\n' "script (optional)"
+          fi
 
           printf '\n=== chrome managed policy ===\n'
           policy=/etc/opt/chrome/policies/managed/cloudchrome.json
@@ -254,10 +262,22 @@ jobs:
           fi
 
           printf '\n=== no personal data or secrets in the image ===\n'
-          for path in /workspaces/.cloudchrome /root/.cloudchrome /home/vscode/.cloudchrome \
-                     /etc/cloudchrome/cloudchrome.env; do
+          for path in /workspaces/.cloudchrome /root/.cloudchrome /home/vscode/.cloudchrome; do
             if [ -e "$path" ]; then echo "unexpected path in image: $path"; fail=1; fi
           done
+          # The non-secret configuration file is expected in the image. It must
+          # be readable by everyone but must not carry a secret.
+          if [ ! -f /etc/cloudchrome/cloudchrome.env ]; then
+            echo 'the configuration file is missing from the image'; fail=1
+          else
+            stat -c 'owner=%U group=%G mode=%a' /etc/cloudchrome/cloudchrome.env
+            if grep -qiE '(password|passphrase|secret|token|key)[[:space:]]*=[[:space:]]*[^[:space:]]' \
+                /etc/cloudchrome/cloudchrome.env; then
+              echo 'the configuration file carries a secret value'; fail=1
+            else
+              echo 'ok       the configuration file carries no secret value'
+            fi
+          fi
           if find / -xdev \( -name '*.age' -o -name 'SingletonLock' -o -name 'Login Data' \) \
                -print -quit 2>/dev/null | grep -q .; then
             echo 'unexpected browser or backup data in image'; fail=1
@@ -471,3 +491,35 @@ jobs:
           docker run --rm "$IMAGE_NAME" cloudchrome version
           docker run --rm "$IMAGE_NAME" cloudchrome --help | head -5
           echo "ok       the CLI runs in the image"
+
+  backup:
+    name: Backup and restore tests (Phase 3)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Run the backup and restore tests inside the image
+        run: |
+          set -euo pipefail
+          docker run --rm -i \
+            -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
+            -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
+            -v "$PWD/tests:/tests:ro" \
+            -v "$PWD/bin:/repo/bin:ro" \
+            -v "$PWD/lib:/repo/lib:ro" \
+            "$IMAGE_NAME" bash /tests/runtime/phase3-tests.sh \
+            | tee "$RUNNER_TEMP/phase3.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the persistence and keyring tests inside the image
+        run: |
+          set -euo pipefail
+          docker run --rm -i \
+            -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
+            -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
+            -v "$PWD/tests:/tests:ro" \
+            -v "$PWD/bin:/repo/bin:ro" \
+            -v "$PWD/lib:/repo/lib:ro" \
+            "$IMAGE_NAME" bash /tests/runtime/phase3-persistence-tests.sh \
+            | tee "$RUNNER_TEMP/phase3-persistence.txt" | tee -a "$GITHUB_STEP_SUMMARY"

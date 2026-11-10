@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 
+from . import backup as backup_module
 from . import chrome as chrome_policy
 from . import keyring as keyring_policy
 from . import logutil
@@ -509,39 +510,77 @@ def command_version(args, config):
 
 # ---------------------------------------------------------------------------
 # backup / restore / prune
-#
-# The encrypted backup, the transactional restore and the pruning arrive in
-# Phase 3. Until then the commands exist, validate their arguments and
-# report clearly that the feature is not implemented yet, rather than
-# pretending to work.
 # ---------------------------------------------------------------------------
-def _backup_not_available():
-    raise CloudChromeError(
-        "the encrypted backup is not implemented in this release; it arrives "
-        "with Phase 3",
-        code=EXIT_UNSUPPORTED,
-    )
-
-
 def command_backup(args, config):
+    """Write an encrypted backup."""
     layout = _layout(config)
     layout.require_initialized()
     with FileLock(layout.control_lock_file, timeout=60):
-        _backup_not_available()
+        result = backup_module.create_backup(
+            layout, config, output=args.output, label=args.label
+        )
+    _print("backup written: %s" % result["path"])
+    _print("members:      %d" % result["members"])
+    _print("sha-256:      %s" % result["sha256"])
+    return EXIT_OK
 
 
 def command_restore(args, config):
+    """Restore an encrypted backup, transactionally.
+
+    The desktop stack is stopped before the state is replaced and started
+    again afterwards, so Chrome never writes to a profile that is being
+    replaced.
+    """
     layout = _layout(config)
     layout.require_initialized()
     with FileLock(layout.control_lock_file, timeout=60):
-        _backup_not_available()
+        was_running = _supervisor_running(layout) is not None
+        if was_running:
+            command_stop(argparse.Namespace(), config)
+        try:
+            result = backup_module.restore_backup(
+                layout, config, source=args.source, assume_yes=args.yes
+            )
+        except CloudChromeError:
+            if was_running:
+                # The state is unchanged, so the stack is simply started again.
+                _restart_after_failure(config, layout)
+            raise
+        if was_running:
+            _restart_after_failure(config, layout)
+    _print("restored from %s" % result["source"])
+    _print("members:      %d" % result["members"])
+    return EXIT_OK
+
+
+def _restart_after_failure(config, layout):
+    """Start the stack again after a restore."""
+    try:
+        _start_supervisor(config, layout)
+    except CloudChromeError as exc:
+        _fail("the desktop stack could not be restarted: %s" % exc)
 
 
 def command_prune(args, config):
+    """Delete the old encrypted backups."""
     layout = _layout(config)
     layout.require_initialized()
     with FileLock(layout.control_lock_file, timeout=60):
-        _backup_not_available()
+        result = backup_module.prune_backups(
+            layout, keep=args.keep, assume_yes=args.yes, dry_run=args.dry_run
+        )
+    for path in result["candidates"]:
+        _print("would delete %s" % path if args.dry_run else "deleted %s" % path)
+    _print(
+        "%d backup(s) %s, %d kept"
+        % (
+            len(result["deleted"]) if not args.dry_run else len(result["candidates"]),
+            "would be deleted" if args.dry_run else "deleted",
+            result["kept"],
+        )
+    )
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------

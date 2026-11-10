@@ -9,6 +9,7 @@ carried forward to later phases.
 - Regression suite: `tests/probe/seccomp-regression.sh`.
 - Platform experiment harness: `tests/probe/sandbox-probe.sh`.
 - Runtime usage, commands and exit codes: `docs/USAGE.md`.
+- Backup, restore and pruning: `docs/BACKUP.md`.
 - Runtime implementation: `bin/cloudchrome` and `lib/cloudchrome/`.
 
 **Evidence status:** every measurement below was taken on **2026-11-10/11** either on a
@@ -44,6 +45,14 @@ repository issues #1–#9; the final Phase 1.1 run is issue #9.
 | The keyring passphrase is private | Mode 0600, never printed, never in the process table | `lib/cloudchrome/keyring.py` |
 | The persistent state is private | Mode 0700 directories; the runtime refuses a wrong owner or mode | `lib/cloudchrome/paths.py` |
 | No personal browser data, secrets or backups in the image or build context | `.dockerignore`, `git ls-files` guard, in-image scan | `.dockerignore`, `ci.yml` |
+| The persistent profile survives a rebuild | The Chrome user-data directory lives in the persistent state directory | `lib/cloudchrome/chrome.py` |
+| The keyring survives a restart | The keyring data and the passphrase live in the persistent state directory | `lib/cloudchrome/keyring.py` |
+| Backups are encrypted | The tar stream is piped into `age`; no plaintext archive is written to disk | `lib/cloudchrome/backup.py` |
+| The age private key is never in a backup | The identity lives outside the archived paths, with mode 0600 | `lib/cloudchrome/backup.py` |
+| The VNC password is never in a backup | It is excluded from the payload explicitly | `lib/cloudchrome/backup.py` |
+| Every archive is treated as untrusted | Every member is validated before anything is extracted | `lib/cloudchrome/archive.py` |
+| The restore is transactional | The previous state is put back when any step fails | `lib/cloudchrome/backup.py` |
+| The pruning never leaves the last backup | The newest backup is always protected | `lib/cloudchrome/backup.py` |
 
 ### Changing the isolation policy
 
