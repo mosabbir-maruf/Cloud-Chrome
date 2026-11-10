@@ -51,7 +51,7 @@ printf 'CapBnd      : %s\n' "$(awk '/^CapBnd:/{print $2}' /proc/self/status)"
 echo
 echo "=== 1-3: socket families and the socketcall ABI ==="
 cat > "$WORK/socketprobe.py" <<'PY'
-import ctypes, errno, mmap, os, platform, socket, struct
+import ctypes, errno, mmap, os, platform, socket, struct, sys
 
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
 results = {}
@@ -98,6 +98,14 @@ for label, family in (("socketpair(AF_UNIX=1)", socket.AF_UNIX), ("socketpair(AF
 # filtered by seccomp on that path. The kernel applies the profile's
 # SCMP_ARCH_X86 sub-architecture filter to it.
 machine = platform.machine()
+
+# Optional: disable the 32-bit compatibility entry point.
+# personality(0xFFFFFFFF) includes ADDR_NO_32BIT and is one of the personality
+# values the upstream profile permits.
+if len(sys.argv) > 1 and sys.argv[1] == "no32":
+    old_persona = libc.personality(0xFFFFFFFF)
+    print(f"personality(0xFFFFFFFF) applied, previous value {old_persona}")
+
 if machine not in ("x86_64", "i686"):
     print(f"socketcall_compat|NOT_APPLICABLE|0|{machine}")
 else:
@@ -158,14 +166,9 @@ echo "$socket_probe" | sed 's/^/      /'
 # The same probe under ADDR_NO_32BIT: the kernel then refuses the 32-bit
 # compatibility entry point, which is the mitigation for a container whose
 # seccomp filter does not cover the compat syscall architecture.
-if command -v setarch >/dev/null 2>&1 && setarch --addr-no-32bit true 2>/dev/null; then
-  compat_no32=$(setarch --addr-no-32bit python3 "$WORK/socketprobe.py" 2>&1 || true)
-  echo "--- the same probe with ADDR_NO_32BIT (setarch --addr-no-32bit) ---"
-  echo "$compat_no32" | sed 's/^/      /'
-else
-  compat_no32=""
-  echo "--- setarch --addr-no-32bit is not available in this image ---"
-fi
+compat_no32=$(python3 "$WORK/socketprobe.py" no32 2>&1 || true)
+echo "--- the same probe with ADDR_NO_32BIT (personality(0xFFFFFFFF)) ---"
+echo "$compat_no32" | sed 's/^/      /'
 
 get() { echo "$socket_probe" | awk -F'|' -v k="$1" '$1==k{print $2":"$4}'; }
 
@@ -219,14 +222,14 @@ case "$compat_vsock" in
 esac
 
 # Under ADDR_NO_32BIT the compatibility entry point must be unusable.
-if [ -n "$compat_no32" ]; then
-  no32_control=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_INET/{print $2":"$4}' | head -1)
-  case "$no32_control" in
-    ALLOWED*) fail "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control (still reachable)" ;;
-    DENIED*) pass "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control" ;;
-    *) note "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control" ;;
-  esac
-fi
+no32_control=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_INET/{print $2":"$4}' | head -1)
+no32_alg=$(printf '%s' "$compat_no32" | awk -F'|' '$1 ~ /socketcall_compat\(AF_ALG/{print $2":"$4}' | head -1)
+case "$no32_control" in
+  ALLOWED*) fail "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control (still reachable)" ;;
+  DENIED*) pass "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control" ;;
+  *) note "ADDR_NO_32BIT closes the 32-bit compatibility path" "$no32_control" ;;
+esac
+note "AF_ALG via socketcall(2) with ADDR_NO_32BIT" "$no32_alg"
 
 # ---------------------------------------------------------------------------
 # 5-6: namespace operations
