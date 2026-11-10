@@ -21,10 +21,16 @@ on:
           - basicLinux32gb
           - standardLinux32gb
 
-# NOTE: "codespaces" is not a valid GITHUB_TOKEN permission scope, so it cannot
-# be requested here. Whether the default token may call the Codespaces API is
-# determined empirically by the "Create the Codespace" step, which reports the
-# exact HTTP status instead of assuming either outcome.
+# NOTE: "codespaces" is NOT a valid GITHUB_TOKEN permission scope, so it cannot
+# be requested here, and the default token is not expected to be able to create
+# a Codespace. To use this workflow, store a token with the `codespace` scope
+# as the repository secret CODESPACES_TOKEN; without it the workflow reports
+# the exact API response and stops.
+#
+# The maintained alternative needs no secret at all: create a Codespace from a
+# throwaway branch that adds a postCreateCommand invoking
+# tests/phase1/sandbox-probe.sh, then read the evidence from the repository
+# issue the probe publishes. See docs/SECURITY.md section 4.
 permissions:
   contents: read
 
@@ -38,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.CODESPACES_TOKEN || github.token }}
       REPO: ${{ github.repository }}
       MACHINE: ${{ inputs.machine }}
     steps:
