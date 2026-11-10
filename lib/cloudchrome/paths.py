@@ -246,3 +246,42 @@ class Layout:
                 "%s does not exist; run 'cloudchrome init' first" % self.persist_dir
             )
         return self
+
+    def validate_for_start(self):
+        """Check that the state can actually be started from.
+
+        The checks run before the supervisor is launched, so a broken state
+        is reported immediately with an actionable message instead of after
+        the stack has already been brought half up.
+        """
+        from . import vnc as vnc_policy
+
+        vnc_policy.assert_password_file(self.vnc_pass_file)
+
+        passphrase = self.keyring_pass_file
+        if not os.path.exists(passphrase):
+            raise NotInitializedError(
+                "the keyring passphrase file %s does not exist; run "
+                "'cloudchrome init' to create it" % passphrase
+            )
+        assert_safe_file(passphrase, OWNER_ONLY_FILE, "the keyring passphrase file")
+
+        chrome = self.chrome_dir
+        if not os.path.isdir(chrome):
+            raise NotInitializedError(
+                "the Chrome profile directory %s does not exist; run "
+                "'cloudchrome init' to create it" % chrome
+            )
+        info = _stat(chrome)
+        if info is None or not stat.S_ISDIR(info.st_mode):
+            raise InvalidStateError("%s is not a directory" % chrome)
+        if info.st_uid != os.getuid():
+            raise InvalidStateError(
+                "%s is owned by uid %d, expected %d"
+                % (chrome, info.st_uid, os.getuid())
+            )
+        if not os.access(chrome, os.R_OK | os.W_OK | os.X_OK):
+            raise InvalidStateError(
+                "%s is not readable and writable by the runtime user" % chrome
+            )
+        return True

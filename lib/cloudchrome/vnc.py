@@ -132,9 +132,27 @@ def write_password_file(path, password):
 def create_password_file(path, password=None):
     """Create the VNC password file if it does not exist yet."""
     if os.path.exists(path):
-        assert_safe_file(path, OWNER_ONLY_FILE, "the VNC password file")
+        assert_password_file(path)
         return path
     return write_password_file(path, password or _generate_password())
+
+
+def assert_password_file(path):
+    """Verify that the VNC password file is usable.
+
+    The file must exist, be a regular file owned by the runtime user, have
+    mode 0600 and hold exactly the 8-byte obfuscated key that TigerVNC
+    expects. A broken file is refused, never repaired: replacing it would
+    silently change the password the user knows.
+    """
+    assert_safe_file(path, OWNER_ONLY_FILE, "the VNC password file")
+    size = os.path.getsize(path)
+    if size != VNC_PASSWORD_FILE_SIZE:
+        raise InvalidStateError(
+            "the VNC password file is %d bytes, expected %d; run "
+            "'cloudchrome passwd' to replace it" % (size, VNC_PASSWORD_FILE_SIZE)
+        )
+    return path
 
 
 def rotate_password_file(path, password=None):

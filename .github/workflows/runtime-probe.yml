@@ -1,0 +1,145 @@
+name: runtime-probe
+
+# Experiment: create a REAL GitHub Codespace from this repository and
+# exercise the complete desktop stack in it.
+#
+# The probe runs from a postCreateCommand hook on a temporary branch, so the
+# production dev container configuration is not modified. The probe publishes
+# its evidence as a repository issue, which this workflow then collects.
+#
+# NOTE: "codespaces" is NOT a valid GITHUB_TOKEN permission scope, so the
+# default token cannot create a Codespace. To use this workflow, store a
+# token with the `codespace` scope as the repository secret CODESPACES_TOKEN.
+#
+# The secret-free alternative is to create the Codespace by hand from the
+# GitHub UI using a branch that carries the hook, then read the evidence from
+# the repository issue. See docs/SECURITY.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine:
+        description: Codespaces machine type
+        type: choice
+        default: basicLinux32gb
+        options:
+          - basicLinux32gb
+          - standardLinux32gb
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: runtime-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe a real Codespace
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ secrets.CODESPACES_TOKEN }}
+      REPO: ${{ github.repository }}
+      MACHINE: ${{ inputs.machine }}
+      BRANCH: probe/runtime
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Create the temporary probe branch
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::repository secret CODESPACES_TOKEN (a token with the codespace scope) is required"
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git checkout -q -B "$BRANCH"
+          python3 - <<'PY'
+          import json, pathlib
+          path = pathlib.Path(".devcontainer/devcontainer.json")
+          config = json.loads(path.read_text())
+          # The production hooks stay in place; the probe runs afterwards and
+          # publishes its evidence.
+          config["postCreateCommand"] = (
+              "bash tests/probe/runtime-probe.sh || true"
+          )
+          path.write_text(json.dumps(config, indent=2) + "\n")
+          PY
+          git add .devcontainer/devcontainer.json
+          git commit -q -m "chore: run the runtime probe once on creation"
+          git push -q --force origin "$BRANCH"
+          echo "probe branch pushed: $BRANCH"
+
+      - name: Create the Codespace
+        id: create
+        run: |
+          set -euo pipefail
+          response=$(gh api --method POST "/repos/${REPO}/codespaces" \
+            -f ref="$BRANCH" \
+            -f machine="${MACHINE}" \
+            -f display_title="Cloud-Chrome runtime probe")
+          name=$(printf '%s' "$response" | jq -r '.name // empty')
+          [ -n "$name" ] || { echo "::error::could not create the Codespace"; exit 1; }
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          printf 'Created Codespace: %s\n' "$name"
+
+      - name: Wait for the evidence to be published
+        run: |
+          set -uo pipefail
+          name="${{ steps.create.outputs.name }}"
+          for _ in $(seq 1 100); do
+            state=$(gh api "/user/codespaces/${name}" --jq '.state' 2>/dev/null || echo unknown)
+            issues=$(gh api "/repos/${REPO}/issues?state=all&per_page=20" \
+              --jq '[.[] | select(.title | test("runtime probe evidence"))] | length' 2>/dev/null || echo 0)
+            printf 'state=%s probe_issues=%s\n' "$state" "$issues"
+            if [ "${issues:-0}" -gt 0 ]; then
+              echo "the probe published its evidence"
+              exit 0
+            fi
+            case "$state" in
+              Unavailable|Deleted)
+                echo "::error::the Codespace entered state $state"
+                exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo "::error::timed out waiting for the probe evidence"
+          exit 1
+
+      - name: Collect the evidence
+        run: |
+          set -euo pipefail
+          gh api "/repos/${REPO}/issues?state=all&per_page=20" \
+            --jq '.[] | select(.title | test("runtime probe evidence")) | .body' > "$RUNNER_TEMP/probe-evidence.md"
+          {
+            echo "## Runtime probe evidence"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/probe-evidence.md"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the evidence artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-probe-${{ github.run_id }}
+          path: ${{ runner.temp }}/probe-evidence.md
+          if-no-files-found: warn
+
+      - name: Delete the Codespace and the temporary branch
+        if: always()
+        run: |
+          set -uo pipefail
+          name="${{ steps.create.outputs.name }}"
+          if [ -n "$name" ]; then
+            gh api --method DELETE "/user/codespaces/${name}" \
+              && echo "Deleted the Codespace $name" \
+              || echo "::warning::could not delete the Codespace $name; delete it at https://github.com/codespaces"
+          fi
+          git push -q origin --delete "$BRANCH" 2>/dev/null \
+            && echo "Deleted the temporary probe branch" \
+            || echo "::warning::could not delete the temporary probe branch"

@@ -65,9 +65,17 @@ COMPONENT_LABELS = {
 }
 
 
+def _restrictive_umask():
+    """Set a restrictive umask in the child before it execs.
+
+    The umask is inherited by every process the child starts, so a file that
+    is created by accident is never readable by another user.
+    """
+    os.umask(0o077)
+
+
 class Component:
     """One supervised process."""
-
     def __init__(self, name, argv, env=None, cwd=None, log_name=None):
         self.name = name
         self.argv = argv
@@ -160,7 +168,11 @@ class Supervisor:
 
     # --- process handling ---------------------------------------------------
     def spawn(self, name, argv, env=None, cwd=None):
-        """Start a component and record its identity."""
+        """Start a component and record its identity.
+
+        The child runs under a restrictive umask, so a file it creates by
+        accident is never readable by another user.
+        """
         component = Component(name, argv, env=env, cwd=cwd)
         log_path = os.path.join(self.layout.log_dir, "%s.log" % component.log_name)
         try:
@@ -179,6 +191,7 @@ class Supervisor:
                 cwd=cwd,
                 start_new_session=True,
                 close_fds=True,
+                preexec_fn=_restrictive_umask,
             )
         except (OSError, ValueError) as exc:
             handle.close()
@@ -228,6 +241,9 @@ class Supervisor:
         self.wait_for("xvnc", ready, timeout=30)
 
     def start_dbus(self):
+        # A socket left behind by a previous run would make dbus-daemon fail.
+        # It is only removed when nothing is listening on it.
+        _remove_stale_socket(self.layout.dbus_socket)
         argv = keyring_policy.dbus_arguments(self.layout.dbus_socket)
         self.spawn("dbus", argv)
         self.wait_for("dbus", lambda: os.path.exists(self.layout.dbus_socket), timeout=20)
@@ -476,6 +492,32 @@ class Supervisor:
 
     def _cleanup_pid_file(self):
         procs.remove_pid_file(self.layout.supervisor_pid_file)
+
+
+def _remove_stale_socket(path):
+    """Remove a socket that nothing is listening on.
+
+    A socket that is still in use belongs to a running process, so it is
+    left alone: removing it would break a live session.
+    """
+    if not os.path.exists(path):
+        return False
+    import socket
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.5)
+        probe.connect(path)
+    except (OSError, socket.error):
+        try:
+            os.unlink(path)
+            return True
+        except OSError:
+            return False
+    else:
+        return False
+    finally:
+        probe.close()
 
 
 def main():

@@ -164,6 +164,22 @@ jobs:
             echo "| Uncompressed image size | $((size_bytes / 1024 / 1024)) MiB ($size_bytes bytes) |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Export the image for the dependent jobs
+        run: |
+          set -euo pipefail
+          # The runtime, backup and hardening jobs run on their own runner,
+          # so the image is passed to them as an artefact.
+          docker save "$IMAGE_NAME" | gzip -1 > "$RUNNER_TEMP/image.tar.gz"
+          echo "image_size_bytes=$(stat -c '%s' "$RUNNER_TEMP/image.tar.gz")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the image artefact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cloud-chrome-image
+          path: ${{ runner.temp }}/image.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Verify installed dependencies inside the image
         run: |
           set -euo pipefail
@@ -451,6 +467,18 @@ jobs:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cloud-chrome-image
+          path: ${{ runner.temp }}/image
+
+      - name: Load the image
+        run: |
+          set -euo pipefail
+          gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
+          docker image inspect "$IMAGE_NAME" --format '{{.Size}}'
+
       - name: Run the runtime test suite inside the image
         run: |
           set -euo pipefail
@@ -500,6 +528,17 @@ jobs:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cloud-chrome-image
+          path: ${{ runner.temp }}/image
+
+      - name: Load the image
+        run: |
+          set -euo pipefail
+          gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
+
       - name: Run the backup and restore tests inside the image
         run: |
           set -euo pipefail
@@ -523,3 +562,73 @@ jobs:
             -v "$PWD/lib:/repo/lib:ro" \
             "$IMAGE_NAME" bash /tests/runtime/phase3-persistence-tests.sh \
             | tee "$RUNNER_TEMP/phase3-persistence.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  hardening:
+    name: Security audit and failure injection (Phase 4)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cloud-chrome-image
+          path: ${{ runner.temp }}/image
+
+      - name: Load the image
+        run: |
+          set -euo pipefail
+          gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
+
+      - name: Run the security audit and failure injection inside the image
+        run: |
+          set -euo pipefail
+          docker run --rm -i \
+            -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
+            -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
+            -v "$PWD/tests:/tests:ro" \
+            -v "$PWD/bin:/repo/bin:ro" \
+            -v "$PWD/lib:/repo/lib:ro" \
+            "$IMAGE_NAME" bash /tests/runtime/phase4-tests.sh \
+            | tee "$RUNNER_TEMP/phase4.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the seccomp regressions still hold
+        run: |
+          set -euo pipefail
+          # The Phase 4 hardening must not have weakened the sandbox: the
+          # whole Phase 1.1 regression suite runs again here.
+          profile="$PWD/.devcontainer/seccomp/chrome.json"
+          docker run --rm -i \
+            --security-opt "seccomp=$profile" \
+            -e CLOUDCHROME_PROFILE_LABEL="cloud-chrome profile" \
+            "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh \
+            | tee "$RUNNER_TEMP/seccomp-phase4.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the Chrome sandbox is still active in the image
+        run: |
+          set -euo pipefail
+          # The launch policy must name the forbidden flags, so a future
+          # change cannot quietly add one.
+          for flag in no-sandbox disable-setuid-sandbox remote-debugging-port; do
+            grep -q -- "--$flag" lib/cloudchrome/chrome.py \
+              || { echo "the launch policy does not name --$flag" >&2; exit 1; }
+          done
+          echo "ok       the launch policy names every forbidden flag"
+
+          # The container must still have no CAP_SYS_ADMIN and no sudo rule.
+          profile="$PWD/.devcontainer/seccomp/chrome.json"
+          docker run --rm \
+            --security-opt "seccomp=$profile" \
+            "$IMAGE_NAME" bash -c '
+              cap_bnd=$(awk "/^CapBnd:/{print \$2}" /proc/self/status)
+              echo "CapBnd=$cap_bnd"
+              if python3 -c "import sys; sys.exit(0 if (int(\"$cap_bnd\",16) >> 21) & 1 else 1)"; then
+                echo "CAP_SYS_ADMIN is present"; exit 1
+              fi
+              if sudo -n true 2>/dev/null; then
+                echo "passwordless root is available"; exit 1
+              fi
+              echo "ok       no CAP_SYS_ADMIN and no passwordless root"
+            '

@@ -184,6 +184,9 @@ def _start_supervisor(config, layout, if_needed=False):
 def command_start(args, config):
     layout = _layout(config)
     layout.require_initialized()
+    # The state is checked before anything is started, so a broken state is
+    # reported straight away instead of after the stack is half up.
+    layout.validate_for_start()
     with FileLock(layout.control_lock_file, timeout=30):
         return _start_supervisor(config, layout, if_needed=args.if_needed)
 
@@ -219,6 +222,7 @@ def command_stop(args, config):
 def command_restart(args, config):
     layout = _layout(config)
     layout.require_initialized()
+    layout.validate_for_start()
     command_stop(args, config)
     with FileLock(layout.control_lock_file, timeout=30):
         return _start_supervisor(config, layout)
@@ -332,6 +336,11 @@ def command_doctor(args, config):
             not info.st_mode & 0o077,
             "mode=%o" % (info.st_mode & 0o777),
         )
+        check(
+            "state directory is owned by the runtime user",
+            info.st_uid == os.getuid(),
+            "uid=%d" % info.st_uid,
+        )
     else:
         check("state directory exists", False, layout.persist_dir)
 
@@ -346,6 +355,11 @@ def command_doctor(args, config):
                 info.st_mode & 0o077 == 0 and info.st_size > 0,
                 "mode=%o size=%d" % (info.st_mode & 0o777, info.st_size),
             )
+            check(
+                "%s is owned by the runtime user" % label,
+                info.st_uid == os.getuid(),
+                "uid=%d" % info.st_uid,
+            )
         else:
             check("%s exists" % label, False)
 
@@ -355,6 +369,15 @@ def command_doctor(args, config):
             "VNC password file is a valid 8-byte key",
             status.get("valid"),
             "size=%s" % status.get("size"),
+        )
+
+    # The age identity must never be world readable.
+    if os.path.exists(layout.identity_file):
+        info = os.stat(layout.identity_file)
+        check(
+            "the age identity is private",
+            info.st_mode & 0o077 == 0,
+            "mode=%o" % (info.st_mode & 0o777),
         )
 
     # --- the stack ----------------------------------------------------------
@@ -370,6 +393,18 @@ def command_doctor(args, config):
     check(
         "noVNC port %d is bound" % config.http_port,
         web_policy.http_port_is_bound(config.http_port),
+    )
+
+    # --- the remote access surface -----------------------------------------
+    check("no DevTools listener is open", _no_devtools_listener())
+    check(
+        "no SSH server is installed",
+        not _any_listening_on(22),
+        "port 22",
+    )
+    check(
+        "no other unexpected listener is open",
+        not _unexpected_listeners(config),
     )
 
     if pid is not None:
@@ -398,6 +433,27 @@ def command_doctor(args, config):
                 any(argument.startswith("--password-store=gnome-libsecret") for argument in argv),
             )
             check("Chrome has no DevTools listener", _no_devtools_listener())
+
+    # --- the logs -----------------------------------------------------------
+    # The logs must never carry a secret.
+    secret = ""
+    if os.path.exists(layout.keyring_pass_file):
+        try:
+            with open(layout.keyring_pass_file, "r", encoding="utf-8") as handle:
+                secret = handle.read().strip()
+        except OSError:
+            secret = ""
+    if secret:
+        leaked = False
+        for name in os.listdir(layout.log_dir) if os.path.isdir(layout.log_dir) else []:
+            path = os.path.join(layout.log_dir, name)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                    if secret in handle.read():
+                        leaked = True
+            except OSError:
+                continue
+        check("no log file carries the keyring passphrase", not leaked)
 
     # --- the host-level limitation -----------------------------------------
     # The 32-bit compatibility entry point is not closed by the container's
@@ -447,6 +503,39 @@ def _no_devtools_listener(port=9222):
         return probe.connect_ex(("127.0.0.1", port)) != 0
     finally:
         probe.close()
+
+
+def _listening_ports():
+    """Return the ports that are in the LISTEN state."""
+    ports = set()
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            try:
+                ports.add(int(fields[1].rpartition(":")[2], 16))
+            except ValueError:
+                continue
+    return ports
+
+
+def _any_listening_on(port):
+    return port in _listening_ports()
+
+
+def _unexpected_listeners(config):
+    """True when a port is listening that Cloud-Chrome does not own.
+
+    The noVNC port and the RFB port are the only ones the runtime opens.
+    """
+    allowed = {config.http_port, config.vnc_port}
+    return sorted(_listening_ports() - allowed)
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +761,9 @@ def main(argv=None):
     if not getattr(args, "handler", None):
         parser.print_help()
         return EXIT_USAGE
+
+    # Every file the runtime creates is private by default.
+    os.umask(0o077)
 
     config = load_config()
     try:
