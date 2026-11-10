@@ -260,7 +260,7 @@ XVNC2_PID=$!
 for _ in $(seq 1 40); do [ -S "$RFB_SOCK" ] && break; sleep 0.25; done
 kv "unix RFB socket" "$([ -S "$RFB_SOCK" ] && echo created || echo "NOT created")"
 
-if [ -S "$RFB_SOCK" ] && command -v python3 >/dev/null 2>&1 ]; then
+if [[ -S "$RFB_SOCK" ]] && command -v python3 >/dev/null 2>&1; then
   printf '\n--- RFB authentication tests (python3, DES via openssl) ---\n'
   python3 - "$RFB_SOCK" "$PASSFILE" <<'PYEOF'
 import os, shutil, socket, struct, subprocess, sys
