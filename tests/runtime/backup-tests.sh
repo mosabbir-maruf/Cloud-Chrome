@@ -145,8 +145,8 @@ fi
 # decryption straight into 'grep -q' makes grep close the pipe early, the
 # producer dies of SIGPIPE, and 'pipefail' turns that into a false failure.
 members=$(age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-    | tar -tzf - 2>/dev/null | sort | tr '\n' ' ')
-note "backup members" "$members"
+    | tar -tzf - 2>/dev/null | sort)
+note "backup members" "$(printf '%s' "$members" | tr '\n' ' ')"
 
 # The VNC password is never in a backup.
 if printf '%s\n' "$members" | grep -q "vnc.pass"; then

@@ -496,7 +496,7 @@ if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
     # decryption straight into 'grep -q' makes grep close the pipe early, the
     # producer dies of SIGPIPE, and the check reports a false failure.
     members=$(age --decrypt --identity "$REPO_ROOT/.cloudchrome/keys/backup-identity.txt" \
-        "$backup_file" 2>/dev/null | tar -tzf - 2>/dev/null | sort | tr '\n' ' ')
+        "$backup_file" 2>/dev/null | tar -tzf - 2>/dev/null | sort)
     printf '%s\n' "$members"
     printf -- '\n--- the VNC password is not in the backup ---\n'
     if printf '%s\n' "$members" | grep -q "vnc.pass"; then

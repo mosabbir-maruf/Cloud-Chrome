@@ -118,7 +118,7 @@ fi
 # decryption straight into 'grep -q' makes grep close the pipe early, the
 # producer dies of SIGPIPE, and 'pipefail' turns that into a false failure.
 members=$(age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-    | tar -tzf - 2>/dev/null | sort | tr '\n' ' ')
+    | tar -tzf - 2>/dev/null | sort)
 
 # The VNC password must never be in the backup.
 if printf '%s\n' "$members" | grep -q "vnc.pass"; then
@@ -126,7 +126,7 @@ if printf '%s\n' "$members" | grep -q "vnc.pass"; then
 else
     pass "the backup does not contain the VNC password file"
 fi
-note "backup members" "$members"
+note "backup members" "$(printf '%s' "$members" | tr '\n' ' ')"
 
 for expected in manifest.json keyring.pass chrome/Default/Cookies; do
     if printf '%s\n' "$members" | grep -q "^$expected$"; then
