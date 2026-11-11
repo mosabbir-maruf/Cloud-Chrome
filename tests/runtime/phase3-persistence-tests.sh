@@ -135,10 +135,11 @@ for _ in range(60):
         break
     time.sleep(0.25)
 
+daemon_log = os.path.join("/tmp", "cloudchrome-keyring-daemon.log")
 daemon = subprocess.Popen(
     keyring.keyring_arguments(),
-    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    env=env)
+    stdin=subprocess.PIPE, stdout=open(daemon_log, "wb"),
+    stderr=subprocess.STDOUT, env=env)
 daemon.stdin.write((passphrase + "\n").encode())
 daemon.stdin.flush()
 daemon.stdin.close()
@@ -151,6 +152,13 @@ try:
 except Exception as exc:
     print("secret_service=failed")
     print("REASON=%s" % exc)
+
+try:
+    with open(daemon_log, "r", encoding="utf-8", errors="replace") as handle:
+        for line in handle.read().splitlines():
+            print("daemon: %s" % line)
+except OSError:
+    pass
 
 daemon.terminate()
 bus.terminate()

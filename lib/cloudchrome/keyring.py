@@ -95,9 +95,12 @@ def secret_tool_available():
 def verify_secret_service(env, timeout=25):
     """Store, read back and delete a secret.
 
-    This is the decisive check that the secret service genuinely works. It
-    returns a dictionary describing the outcome; the secret itself is random
-    and is never logged.
+    This is the decisive check that the secret service genuinely works. The
+    daemon registers itself on the session bus a moment after it is started,
+    so the check retries until the service answers or the time runs out.
+
+    It returns a dictionary describing the outcome; the secret itself is
+    random and is never logged.
     """
     if not secret_tool_available():
         raise UnsupportedError(
@@ -106,6 +109,7 @@ def verify_secret_service(env, timeout=25):
 
     import base64
     import os as _os
+    import time
 
     probe = base64.b32encode(_os.urandom(16)).decode("ascii").rstrip("=").lower()
     attribute = "/cloudchrome/secret-service-probe"
@@ -121,15 +125,24 @@ def verify_secret_service(env, timeout=25):
             check=False,
         )
 
-    store = run(
-        ["secret-tool", "store", "--label=Cloud-Chrome probe", attribute],
-        stdin=probe,
-    )
-    if store.returncode != 0:
-        raise UnsupportedError(
-            "the secret service did not accept a stored secret (secret-tool exited %d)"
-            % store.returncode
+    deadline = time.monotonic() + timeout
+    store = None
+    last_error = ""
+    while True:
+        store = run(
+            ["secret-tool", "store", "--label=Cloud-Chrome probe", attribute],
+            stdin=probe,
         )
+        if store.returncode == 0:
+            break
+        last_error = store.stderr.decode("utf-8", "replace").strip()
+        if time.monotonic() >= deadline:
+            raise UnsupportedError(
+                "the secret service did not accept a stored secret "
+                "(secret-tool exited %d%s)"
+                % (store.returncode, ": " + last_error if last_error else "")
+            )
+        time.sleep(0.5)
 
     lookup = run(["secret-tool", "lookup", attribute])
     if lookup.returncode != 0:
