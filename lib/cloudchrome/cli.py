@@ -38,6 +38,7 @@ from .errors import (
     NotRunningError,
     UsageError,
 )
+from .lifecycle import Lifecycle
 from .limits import Limits
 from .locking import FileLock, is_locked
 from .paths import Layout, OWNER_ONLY_DIR, assert_safe_file, ensure_dir
