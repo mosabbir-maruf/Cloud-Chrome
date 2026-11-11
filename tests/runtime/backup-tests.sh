@@ -249,8 +249,10 @@ fi
 # ---------------------------------------------------------------------------
 section "6. A backup and a restore with the stack running"
 # ---------------------------------------------------------------------------
-# The desktop stack is started, so the backup has to quiesce Chrome.
-bash "$CLI" start > "$WORK/start.txt" 2>&1
+# The desktop stack is started, so the backup has to quiesce Chrome. A
+# restore leaves the restored desktop running, so the stack may already be
+# up; in that case it is left alone.
+bash "$CLI" start --if-needed > "$WORK/start.txt" 2>&1
 if [ $? -eq 0 ]; then
     pass "the desktop stack starts" "$(head -1 "$WORK/start.txt")"
 else
@@ -354,7 +356,8 @@ else
 fi
 
 # The restored profile is usable: Chrome comes up against it.
-if bash "$CLI" doctor 2>/dev/null | grep -q "Chrome uses the persistent profile   ok"; then
+if bash "$CLI" doctor 2>/dev/null \
+    | grep -qE "^Chrome uses the persistent profile +ok"; then
     pass "the restored profile is used by Chrome"
 else
     fail "the restored profile is used by Chrome" "$(bash "$CLI" doctor 2>/dev/null | grep 'persistent profile')"

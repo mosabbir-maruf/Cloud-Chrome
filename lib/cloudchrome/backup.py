@@ -778,7 +778,10 @@ def _recover(lifecycle, layout, rollback, swapped, was_running, failure):
                 keep=3,
             )
 
-    if was_running:
+    if was_running and not lifecycle.is_running():
+        # The desktop was running before the restore and is not running now,
+        # so it is started again. A desktop that is still running was never
+        # stopped, because the failure happened before that step.
         try:
             lifecycle.start()
         except CloudChromeError as exc:
