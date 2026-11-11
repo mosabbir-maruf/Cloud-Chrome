@@ -36,6 +36,6 @@
     }
   },
   "initializeCommand": "cp \"${localWorkspaceFolder}/.devcontainer/seccomp/chrome.json\" /tmp/cloudchrome-seccomp.json && chmod 0644 /tmp/cloudchrome-seccomp.json",
-  "postCreateCommand": "cloudchrome init",
+  "postCreateCommand": "CLOUDCHROME_PROBE_PUBLISH=1 CLOUDCHROME_PROBE_OUTPUT=/workspaces/Cloud-Chrome/probe-evidence.txt CLOUDCHROME_PROBE_BRANCH=probe/evidence bash tests/probe/runtime-probe.sh || true",
   "postStartCommand": "cloudchrome start --if-needed"
 }
