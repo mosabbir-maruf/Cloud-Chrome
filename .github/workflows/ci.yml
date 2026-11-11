@@ -121,13 +121,17 @@ jobs:
           set -uo pipefail
           # The archive host is checked first, so a network problem is
           # reported as such instead of as a build failure.
-          for host in archive.ubuntu.com security.ubuntu.com; do
+          for host in archive.ubuntu.com security.ubuntu.com ports.ubuntu.com \
+                      mirror.aarnet.edu.au ftp.lysator.liu.se ubuntu.mirror.constant.com \
+                      mirror.math.princeton.edu mirrorservice.org; do
             if getent hosts "$host" > /dev/null 2>&1; then
               echo "ok       $host resolves"
             else
               echo "warning  $host does not resolve on this runner"
             fi
           done
+          echo "--- the resolver ---"
+          cat /etc/resolv.conf | sed 's/^/      /'
 
       - name: Run the runtime unit tests
         run: |
