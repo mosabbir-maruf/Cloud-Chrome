@@ -367,10 +367,11 @@ class Supervisor:
             desktop_policy.session_arguments(self.config.display),
             env=env,
         )
-        # The XFCE session starts the window manager itself. The manager is
-        # only started separately when the session does not, so the desktop
-        # never ends up with two of them.
-        if not self._wait_for_window_manager(timeout=20.0):
+        # The session starts the window manager itself. The manager is only
+        # started separately when the session does not, so the desktop never
+        # ends up with two of them: a second one refuses to run and reports
+        # that another compositing manager is already on the screen.
+        if not self._wait_for_window_manager(timeout=30.0):
             self.spawn(
                 "desktop-wm",
                 desktop_policy.window_manager_arguments(self.config.display),

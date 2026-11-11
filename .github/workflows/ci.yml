@@ -253,7 +253,7 @@ jobs:
 
           printf '\n=== required binaries ===\n'
           for bin in Xtigervnc tigervncpasswd tigervncconfig websockify google-chrome \
-                     xfce4-session xfwm4 dbus-launch dbus-daemon dbus-send gnome-keyring-daemon secret-tool \
+                     xfce4-session startxfce4 xfwm4 dbus-launch dbus-daemon dbus-send gnome-keyring-daemon secret-tool \
                      xdotool age age-keygen jq curl sha256sum flock setsid timeout \
                      python3 tar; do
             if command -v "$bin" > /dev/null 2>&1; then

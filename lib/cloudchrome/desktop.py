@@ -10,15 +10,17 @@ import os
 
 
 def session_arguments(display):
-    """The argument vector of the XFCE session manager.
+    """The argument vector of the XFCE session.
 
-    The session name becomes a directory name under the session cache, so it
-    is reduced to characters that are safe in a path.
+    ``startxfce4`` is the documented entry point; ``xfce4-session`` on its
+    own is not, and it accepts only ``--disable-tcp``, ``--help`` and
+    ``--version``. ``startxfce4`` also runs the X initialisation script,
+    which sets up the environment the failsafe session needs.
+
+    The session starts the window manager itself, so the window manager is
+    not started separately.
     """
-    name = "cloudchrome%s" % "".join(
-        character if character.isalnum() else "-" for character in display
-    )
-    return ["xfce4-session", "--session=%s" % name]
+    return ["startxfce4"]
 
 
 def window_manager_arguments(display):
@@ -45,6 +47,9 @@ def desktop_environment(display, dbus_address, layout):
     env["XDG_CACHE_HOME"] = layout.xdg_cache_home
     env["XDG_CONFIG_HOME"] = layout.xdg_config_home
     env["XDG_CONFIG_DIRS"] = "/etc/xdg"
+    # The failsafe session can only be determined when the desktop is named.
+    env["XDG_CURRENT_DESKTOP"] = "XFCE"
+    env["DESKTOP_SESSION"] = "cloudchrome"
     env["HOME"] = os.path.expanduser("~")
     env["USER"] = "vscode"
     env["LOGNAME"] = "vscode"
