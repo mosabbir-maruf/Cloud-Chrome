@@ -76,9 +76,11 @@ def keyring_arguments():
     """The argument vector of the keyring daemon.
 
     ``--unlock`` unlocks the login keyring, reading the passphrase from
-    standard input. The passphrase is therefore never visible in the process
-    table. ``--foreground`` keeps the daemon as a child of the supervisor, so
-    the supervisor owns its lifecycle.
+    standard input, and creates the login keyring when it does not exist
+    yet. The passphrase is therefore never visible in the process table.
+
+    ``--foreground`` keeps the daemon as a child of the supervisor, so the
+    supervisor owns its lifecycle.
     """
     return [
         "gnome-keyring-daemon",

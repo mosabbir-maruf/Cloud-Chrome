@@ -39,7 +39,15 @@ RUN set -eux; \
         echo "Cloud-Chrome supports linux/amd64 only (got '${TARGETARCH:-unknown}')" >&2; \
         exit 1; \
     fi; \
-    apt-get update; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get update; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then \
+            echo "the Ubuntu archive could not be reached after five attempts" >&2; \
+            exit 1; \
+        fi; \
+        echo "the archive could not be reached; retrying" >&2; \
+        sleep 10; \
+    done; \
     apt-get install -y --no-install-recommends \
         "tigervnc-standalone-server=${PINNED_TIGERVNC_VERSION}" \
         "tigervnc-common=${PINNED_TIGERVNC_VERSION}" \
@@ -70,7 +78,15 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \
-    apt-get update; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get update; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then \
+            echo "the Ubuntu archive could not be reached after five attempts" >&2; \
+            exit 1; \
+        fi; \
+        echo "the archive could not be reached; retrying" >&2; \
+        sleep 10; \
+    done; \
     mkdir -p /tmp/dl; \
     curl -fsSL --retry 3 -o /tmp/dl/chrome.deb "${CHROME_DEB_URL}"; \
     echo "${CHROME_DEB_SHA256}  /tmp/dl/chrome.deb" | sha256sum -c -; \
