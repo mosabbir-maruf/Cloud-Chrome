@@ -600,10 +600,6 @@ else
         echo "the state is unchanged after the refused restore: FAIL ($after)"
     fi
 
-    # --- the rollback state is kept after a failure -----------------------
-    kept=$(find "$REPO_ROOT/.cloudchrome" -maxdepth 1 -name '.cloudchrome-rollback.*' 2>/dev/null | wc -l)
-    kv "the rollback directories kept after the failures" "$kept"
-
     # --- a failure inside the transaction keeps the old state -------------
     # The failure is injected at the health check, which is the last step
     # before the restore is finalised. The previous profile, keyring and
@@ -683,7 +679,23 @@ except Exception as exc:  # noqa: BLE001
 
 print("profile_preserved=%s" % (profile_marker() == before_marker))
 print("passphrase_preserved=%s" % (passphrase() == before_pass))
+
+# The rollback state is kept after the failure, and it still holds the
+# previous data.
+kept = sorted(
+    name for name in os.listdir(layout.persist_dir)
+    if name.startswith(".cloudchrome-rollback.")
+)
+print("rollback_states_kept=%d" % len(kept))
+for name in kept:
+    saved = os.path.join(layout.persist_dir, name, "chrome")
+    print("rollback_holds_the_previous_profile=%s"
+          % os.path.isfile(os.path.join(saved, "Default", "CloudChromeProbeMarker")))
 PY
+
+    # --- the rollback state is kept after the failure ---------------------
+    kept=$(find "$REPO_ROOT/.cloudchrome" -maxdepth 1 -name '.cloudchrome-rollback.*' 2>/dev/null | wc -l)
+    kv "the rollback directories kept after the failures" "$kept"
 
     # --- no plaintext is left behind --------------------------------------
     plain=$(find "$REPO_ROOT/.cloudchrome" -name 'backup.tar.gz' 2>/dev/null | wc -l)
