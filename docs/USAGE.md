@@ -218,6 +218,54 @@ Codespace the port panel opens it; `cloudchrome url` prints the same URL.
 
 ---
 
+## The Chrome profile
+
+The browser profile lives in `.cloudchrome/chrome/`, which is inside the
+Codespaces persistent volume. It therefore survives:
+
+* a stop and a start,
+* a restart of the container,
+* a rebuild of the image.
+
+Cookies, the browsing history, the preferences, the extensions and the
+signed-in website sessions are all part of it, so a session that was signed
+in on one day is still signed in the next.
+
+Only one Chrome may use the profile at a time. Chrome's own profile lock
+takes care of that, and the supervisor only ever starts one browser.
+
+A profile that is in use when the container is stopped uncleanly is not
+deleted: Chrome writes its state when it exits, and the next start opens the
+same profile. Nothing in the runtime resets the profile.
+
+---
+
+## The GNOME Keyring
+
+The runtime starts its own D-Bus session bus and its own GNOME Keyring, and
+it unlocks the keyring with a passphrase that is generated once and kept in
+`.cloudchrome/keyring.pass` with mode `0600`.
+
+Chrome is started with `--password-store=gnome-libsecret`, so the passwords
+it stores go into the keyring and not into a file in the clear.
+
+The passphrase is never printed, never in a log, never in the process table
+and never in an environment variable. It is written to the keyring daemon's
+standard input and to nothing else.
+
+The keyring data lives in `.cloudchrome/xdg/keyrings/`, so the secrets
+survive a restart and a rebuild.
+
+**The runtime fails closed.** Before Chrome is started, the secret service is
+verified by storing a secret and reading it back. If that does not work,
+Chrome is not started at all: it is never started with a plaintext password
+store as a fallback.
+
+`cloudchrome doctor` reports the state of the keyring and the secret
+service.
+
+---
+
 ## Troubleshooting
 
 **The desktop does not come up.**
@@ -227,7 +275,8 @@ cloudchrome status
 cloudchrome logs --component supervisor
 ```
 
-The supervisor logs which component failed and why.
+The supervisor logs which component failed and why, and every component has
+its own log in `.cloudchrome/logs/`.
 
 **Chrome does not start.**
 
