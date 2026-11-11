@@ -116,6 +116,19 @@ jobs:
           python3 -m compileall -q lib/cloudchrome
           echo "ok       the runtime package compiles"
 
+      - name: Check the reachability of the Ubuntu archive
+        run: |
+          set -uo pipefail
+          # The archive host is checked first, so a network problem is
+          # reported as such instead of as a build failure.
+          for host in archive.ubuntu.com security.ubuntu.com; do
+            if getent hosts "$host" > /dev/null 2>&1; then
+              echo "ok       $host resolves"
+            else
+              echo "warning  $host does not resolve on this runner"
+            fi
+          done
+
       - name: Run the runtime unit tests
         run: |
           set -euo pipefail
