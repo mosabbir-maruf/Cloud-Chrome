@@ -405,7 +405,7 @@ publish_via_git() {
     # The Codespaces token is a REST API credential, not a git credential,
     # and the container has no repository token by default. The git
     # credentials of the Codespace do work, so the evidence is committed to
-    # the branch the Codespace was created from.
+    # a branch of the repository.
     #
     # The commit is made on the current branch on purpose: creating a new
     # branch inside the workspace is a bigger operation than the Codespaces
@@ -423,9 +423,23 @@ publish_via_git() {
         fi
         git commit -q -m "chore(probe): record the runtime probe evidence" 2>&1
         echo "pushing to $branch" >&2
-        git push origin "HEAD:refs/heads/${branch}" 2>&1
-        echo "pushed to $branch" >&2
-        exit 0
+        # The outcome of the push is recorded in the commit message, so a
+        # failure says why without a readable log.
+        if git push origin "HEAD:refs/heads/${branch}" > "$WORK/push.log" 2>&1; then
+            git commit -q --amend -m "chore(probe): record the runtime probe evidence
+
+pushed to ${branch}" 2>&1
+            git push -f -q origin "HEAD:refs/heads/${branch}" >/dev/null 2>&1
+            echo "pushed to $branch" >&2
+            exit 0
+        fi
+        detail=$(tr '\n' ' ' < "$WORK/push.log" | cut -c1-300)
+        git commit -q --amend -m "chore(probe): record the runtime probe evidence
+
+the push failed: ${detail}" 2>&1
+        git push -f -q origin "HEAD:refs/heads/${branch}" >/dev/null 2>&1
+        echo "the push failed: $detail" >&2
+        exit 1
     )
 }
 
@@ -449,6 +463,12 @@ published=false
 if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ]; then
     token="${GITHUB_TOKEN:-${PROBE_GIT_TOKEN:-}}"
     repository="${GITHUB_REPOSITORY:-}"
+    if [ -z "$token" ] && command -v gh > /dev/null 2>&1; then
+        # The Codespaces image authenticates the gh CLI with the user's
+        # token, which is a usable repository credential.
+        token=$(gh auth token 2>/dev/null || true)
+        repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+    fi
     if [ -n "$token" ] && [ -n "$repository" ]; then
         GITHUB_REPOSITORY="$repository"
         export GITHUB_REPOSITORY
