@@ -335,12 +335,15 @@ for entry in sorted(os.listdir('/proc')):
     done
 
     printf '\n--- the forbidden flags ---\n'
-    if tr '\0' '\n' < "/proc/$chrome_pid/cmdline" 2>/dev/null | grep -qE '^--no-sandbox|^--remote-debugging|^--disable-setuid-sandbox'; then
+    # Chrome rewrites its argument vector into a single string, so the
+    # checks are made against the joined command line.
+    command_line=$(tr '\0' ' ' < "/proc/$chrome_pid/cmdline" 2>/dev/null)
+    if printf '%s' "$command_line" | grep -qE -- '--no-sandbox|--remote-debugging|--disable-setuid-sandbox'; then
         echo "a forbidden flag is present: FAIL"
     else
         echo "no forbidden flag is present: ok"
     fi
-    if tr '\0' '\n' < "/proc/$chrome_pid/cmdline" 2>/dev/null | grep -q '^--password-store=gnome-libsecret'; then
+    if printf '%s' "$command_line" | grep -q -- '--password-store=gnome-libsecret'; then
         echo "the libsecret password store is selected: ok"
     else
         echo "the libsecret password store is selected: FAIL"

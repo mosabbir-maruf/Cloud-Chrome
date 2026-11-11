@@ -125,23 +125,44 @@ grep -q "novnc_bound=True" "$WORK/ports.txt" \
 # ---------------------------------------------------------------------------
 section "4. The Chrome launch policy"
 # ---------------------------------------------------------------------------
-chrome_pid=$(pgrep -f "google-chrome.*--user-data-dir" 2>/dev/null | head -1)
+chrome_pid=$(python3 -c "
+import os, sys
+sys.path.insert(0, os.environ['REPO_ROOT'] + '/lib')
+from cloudchrome.config import load_config
+from cloudchrome.paths import Layout
+from cloudchrome import procs
+
+layout = Layout(load_config())
+marker = '--user-data-dir=%s' % layout.chrome_dir
+for entry in sorted(os.listdir('/proc')):
+    if not entry.isdigit():
+        continue
+    argv = procs.read_cmdline(int(entry))
+    if not argv:
+        continue
+    line = ' '.join(argv)
+    if marker in line and '--type=' not in line:
+        print(entry)
+        break
+" 2>/dev/null)
 if [ -n "$chrome_pid" ]; then
-    argv=$(tr '\0' '\n' < "/proc/$chrome_pid/cmdline" 2>/dev/null)
-    if printf '%s\n' "$argv" | grep -q '^--password-store=gnome-libsecret'; then
+    # Chrome rewrites its argument vector into a single string, so the checks
+    # are made against the joined command line.
+    command_line=$(tr '\0' ' ' < "/proc/$chrome_pid/cmdline" 2>/dev/null)
+    if printf '%s' "$command_line" | grep -q -- '--password-store=gnome-libsecret'; then
         pass "Chrome uses the libsecret password store"
     else
-        fail "Chrome uses the libsecret password store" "$(printf '%s\n' "$argv" | head -3 | tr '\n' ' ')"
+        fail "Chrome uses the libsecret password store" "$(printf '%s' "$command_line" | cut -c1-100)"
     fi
-    if printf '%s\n' "$argv" | grep -qE '^--no-sandbox|^--remote-debugging|^--disable-setuid-sandbox'; then
-        fail "Chrome runs without a forbidden flag"
+    if printf '%s' "$command_line" | grep -qE -- '--no-sandbox|--remote-debugging|--disable-setuid-sandbox'; then
+        fail "Chrome runs without a forbidden flag" "$(printf '%s' "$command_line" | cut -c1-100)"
     else
         pass "Chrome runs without a forbidden flag"
     fi
-    if printf '%s\n' "$argv" | grep -q -- "--user-data-dir=$state/chrome"; then
+    if printf '%s' "$command_line" | grep -q -- "--user-data-dir=$state/chrome"; then
         pass "Chrome uses the persistent profile"
     else
-        fail "Chrome uses the persistent profile"
+        fail "Chrome uses the persistent profile" "$(printf '%s' "$command_line" | cut -c1-100)"
     fi
 else
     fail "Chrome is running" "no Chrome process found"

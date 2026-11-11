@@ -431,6 +431,10 @@ def command_doctor(args, config):
         browser = _find_browser_process(layout)
         if browser is not None:
             browser_pid, browser_argv = browser
+            # Chrome rewrites its argument vector into a single string, so the
+            # checks are made against the joined command line and not
+            # against the individual arguments.
+            command_line = " ".join(browser_argv)
             forbidden = [
                 argument
                 for argument in browser_argv
@@ -439,18 +443,12 @@ def command_doctor(args, config):
             check("Chrome runs without forbidden flags", not forbidden, ",".join(forbidden))
             check(
                 "Chrome uses the libsecret password store",
-                any(
-                    argument.startswith("--password-store=gnome-libsecret")
-                    for argument in browser_argv
-                ),
-                " ".join(browser_argv[:4]),
+                "--password-store=gnome-libsecret" in command_line,
+                command_line[:120],
             )
             check(
                 "Chrome uses the persistent profile",
-                any(
-                    argument.startswith("--user-data-dir=%s" % layout.chrome_dir)
-                    for argument in browser_argv
-                ),
+                "--user-data-dir=%s" % layout.chrome_dir in command_line,
             )
             check("Chrome has no DevTools listener", _no_devtools_listener())
         else:
@@ -534,9 +532,10 @@ def _find_browser_process(layout):
         argv = procs.read_cmdline(pid)
         if not argv:
             continue
-        if marker not in " ".join(argv):
+        command_line = " ".join(argv)
+        if marker not in command_line:
             continue
-        if any(argument.startswith("--type=") for argument in argv):
+        if "--type=" in command_line:
             continue
         return pid, argv
     return None
