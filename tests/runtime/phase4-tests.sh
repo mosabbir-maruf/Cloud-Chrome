@@ -264,12 +264,38 @@ else
     pass "no log file contains the keyring passphrase"
 fi
 
-# No process may have it in its arguments.
-if [ -n "$secret" ] && grep -rlF "$secret" /proc/*/cmdline 2>/dev/null | head -1 | grep -q .; then
-    fail "the keyring passphrase is absent from the process table"
-else
+# The keyring passphrase must never appear in the process arguments. The
+# search reads the passphrase from a file, so the search itself does not put
+# it in its own arguments.
+printf '%s' "$secret" > "$WORK/secret.txt"
+chmod 0600 "$WORK/secret.txt"
+if CLOUDCHROME_TEST_SECRET="$WORK/secret.txt" python3 - <<'PY'
+import os, sys
+
+secret = open(os.environ["CLOUDCHROME_TEST_SECRET"], "r", encoding="utf-8").read().strip()
+mine = {os.getpid(), os.getppid()}
+for entry in os.listdir("/proc"):
+    if not entry.isdigit():
+        continue
+    pid = int(entry)
+    if pid in mine:
+        continue
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        continue
+    if secret.encode("utf-8") in raw:
+        print("the passphrase is in the arguments of pid %d" % pid, file=sys.stderr)
+        sys.exit(1)
+sys.exit(0)
+PY
+then
     pass "the keyring passphrase is absent from the process table"
+else
+    fail "the keyring passphrase is absent from the process table"
 fi
+rm -f "$WORK/secret.txt"
 
 # The VNC password must never appear in the logs either. The stored password
 # is an obfuscated key, so the check is on the file's content.

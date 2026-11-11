@@ -153,12 +153,38 @@ else
     pass "the keyring passphrase is absent from the logs"
 fi
 
-# The passphrase must not be in any process arguments either.
-if grep -rlF "$keyring_secret" /proc/*/cmdline 2>/dev/null | head -1 | grep -q .; then
-    fail "the keyring passphrase is absent from the process table"
-else
+# The passphrase must not be in any process arguments either. The search
+# reads the passphrase from a file, so the search itself does not put it in
+# its own arguments.
+printf '%s' "$keyring_secret" > "$WORK/secret.txt"
+chmod 0600 "$WORK/secret.txt"
+if CLOUDCHROME_TEST_SECRET="$WORK/secret.txt" python3 - <<'PY'
+import os, sys
+
+secret = open(os.environ["CLOUDCHROME_TEST_SECRET"], "r", encoding="utf-8").read().strip()
+mine = {os.getpid(), os.getppid()}
+for entry in os.listdir("/proc"):
+    if not entry.isdigit():
+        continue
+    pid = int(entry)
+    if pid in mine:
+        continue
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        continue
+    if secret.encode("utf-8") in raw:
+        print("the passphrase is in the arguments of pid %d" % pid, file=sys.stderr)
+        sys.exit(1)
+sys.exit(0)
+PY
+then
     pass "the keyring passphrase is absent from the process table"
+else
+    fail "the keyring passphrase is absent from the process table"
 fi
+rm -f "$WORK/secret.txt"
 
 # status / doctor / logs must not print it.
 for command in status doctor logs; do

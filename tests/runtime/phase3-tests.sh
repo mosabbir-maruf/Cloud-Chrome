@@ -345,7 +345,7 @@ sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
 from cloudchrome import backup
 from cloudchrome.config import load_config
 from cloudchrome.paths import Layout
-from cloudrome.errors import IntegrityError
+from cloudchrome.errors import IntegrityError
 
 config = load_config()
 layout = Layout(config)

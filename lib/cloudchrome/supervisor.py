@@ -74,6 +74,10 @@ def _restrictive_umask():
     os.umask(0o077)
 
 
+class Stopped(Exception):
+    """The supervisor was asked to stop, so it is not a failure."""
+
+
 class Component:
     """One supervised process."""
     def __init__(self, name, argv, env=None, cwd=None, log_name=None):
@@ -203,10 +207,16 @@ class Supervisor:
         return component
 
     def wait_for(self, name, predicate, timeout=30.0, interval=0.25):
-        """Wait until *predicate* is satisfied for a component."""
+        """Wait until *predicate* is satisfied for a component.
+
+        A stop request interrupts the wait, so a signal that arrives while
+        the stack is still coming up is honoured at once.
+        """
         component = self.components.get(name)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if self._stopping:
+                raise Stopped("a stop was requested while %s was starting" % name)
             if component is not None and not component.alive():
                 code = component.process.poll() if component.process else None
                 raise CloudChromeError(
@@ -390,8 +400,15 @@ class Supervisor:
             ("chrome", self.start_chrome),
         )
         for name, step in steps:
+            if self._stopping:
+                raise Stopped("a stop was requested before %s was started" % name)
             try:
                 step()
+            except Stopped:
+                self.state = "stopped"
+                self.write_state()
+                self.stop_all()
+                raise
             except CloudChromeError as exc:
                 self.state = "failed"
                 self.error = "%s: %s" % (name, exc)
@@ -478,6 +495,14 @@ class Supervisor:
 
         try:
             self.start()
+        except Stopped:
+            # A stop request arrived while the stack was coming up. The
+            # components that were already started are stopped and the
+            # supervisor exits cleanly.
+            self.log("the supervisor was stopped while the stack was starting")
+            self._cleanup_pid_file()
+            self._lock.release()
+            return 0
         except CloudChromeError as exc:
             self.error = str(exc)
             self.write_state()

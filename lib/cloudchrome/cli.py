@@ -110,6 +110,10 @@ def command_init(args, config):
     keyring_policy.create_passphrase_file(layout.keyring_pass_file)
     vnc_policy.create_password_file(layout.vnc_pass_file)
 
+    # The age identity for the encrypted backups is created once as well, so
+    # that 'cloudchrome backup' works without any further preparation.
+    backup_module.ensure_identity(layout)
+
     os.makedirs(layout.log_dir, mode=OWNER_ONLY_DIR, exist_ok=True)
     logutil.append(
         layout.supervisor_log,
@@ -544,24 +548,26 @@ def _unexpected_listeners(config):
 def command_passwd(args, config):
     """Rotate the VNC password.
 
-    The password is printed only when stdout is an interactive terminal. The
-    command is safe to repeat: the previous file is replaced atomically and
-    the sessions that are already authenticated stay authenticated.
+    The password is printed only when stdout is an interactive terminal.
+    Without a terminal the rotation does not happen either: a password that
+    was changed and cannot be shown would lock the user out of their own
+    desktop without any way to recover it.
     """
     layout = _layout(config)
     layout.require_initialized()
     if not os.path.exists(layout.vnc_pass_file):
         raise NotInitializedError("the VNC password file does not exist yet")
 
+    if not _stdout_is_tty():
+        raise CloudChromeError(
+            "the VNC password is only shown on an interactive terminal, so it "
+            "was not changed; run 'cloudchrome passwd' in a terminal",
+            code=EXIT_UNSUPPORTED,
+        )
+
     _path, password = vnc_policy.rotate_password_file(layout.vnc_pass_file)
     global _last_generated_password
     _last_generated_password = password
-    if not _stdout_is_tty():
-        _fail(
-            "the VNC password was rotated but is not printed: standard output is "
-            "not an interactive terminal"
-        )
-        return EXIT_UNSUPPORTED
     _print(password)
     return EXIT_OK
 
