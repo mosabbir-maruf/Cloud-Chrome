@@ -438,6 +438,18 @@ def passphrase():
         return handle.read()
 
 
+def read_or_report(reader):
+    """Read the state, or report why it could not be read.
+
+    A file that cannot be read is a result in itself, not a reason to stop
+    the measurement: the other cases still have to be measured.
+    """
+    try:
+        return reader()
+    except Exception as exc:
+        return "UNREADABLE(%s)" % str(exc)[:80]
+
+
 backups = sorted(
     os.path.join(layout.backup_dir, name)
     for name in os.listdir(layout.backup_dir)
@@ -450,8 +462,8 @@ for fail_at in ("install", "verify", "start", "health"):
     with open(os.path.join(layout.chrome_dir, "Default", "Cookies"), "w",
               encoding="utf-8") as handle:
         handle.write("marker-%s" % fail_at)
-    before_marker = marker()
-    before_pass = passphrase()
+    before_marker = read_or_report(marker)
+    before_pass = read_or_report(passphrase)
 
     original_swap = backup_module._swap_in
     original_verify = backup_module._verify_installed
@@ -478,36 +490,51 @@ for fail_at in ("install", "verify", "start", "health"):
     backup_module._swap_in = original_swap
     backup_module._verify_installed = original_verify
 
-    print("CASE=%s outcome=%s" % (fail_at, outcome))
-    print("  marker_preserved=%s" % (marker() == before_marker))
-    print("  passphrase_preserved=%s" % (passphrase() == before_pass))
+    after_marker = read_or_report(marker)
+    after_pass = read_or_report(passphrase)
+    print("CASE=%s outcome=%s marker_preserved=%s passphrase_preserved=%s"
+          % (fail_at, outcome, after_marker == before_marker,
+             after_pass == before_pass))
 PY
+
+# Every failure case is measured, and every case is reported on one line.
+#
+# The number of cases is checked as well: a case that the measurement
+# script never reached would otherwise be silently skipped, and the suite
+# would pass without ever exercising it.
+expected_cases=4
+measured=$(grep -c '^CASE=' "$WORK/failures.txt" 2>/dev/null || echo 0)
+if [ "$measured" -eq "$expected_cases" ]; then
+    pass "every failure case was measured" "$measured of $expected_cases"
+else
+    fail "every failure case was measured" "$measured of $expected_cases"
+    printf -- '\n--- the measurement output ---\n'
+    sed 's/^/      /' "$WORK/failures.txt"
+fi
 
 while read -r line; do
     case "$line" in
         CASE=*)
-            case_name=$(printf '%s' "$line" | sed 's/CASE=//; s/ .*//')
-            outcome=$(printf '%s' "$line" | sed -n 's/.*outcome=//p')
+            case_name=$(printf '%s' "$line" | sed 's/^CASE=//; s/ .*//')
+            outcome=$(printf '%s' "$line" | sed -n 's/.*outcome=//; s/ .*//p')
+            marker_state=$(printf '%s' "$line" | sed -n 's/.*marker_preserved=//; s/ .*//p')
+            pass_state=$(printf '%s' "$line" | sed -n 's/.*passphrase_preserved=//p')
             if [ "$outcome" = "refused" ]; then
                 pass "the failure at '$case_name' is refused"
             else
                 fail "the failure at '$case_name' is refused" "$outcome"
             fi
-            ;;
-        *marker_preserved*)
-            value=$(printf '%s' "$line" | sed 's/.*=//')
-            if [ "$value" = "True" ]; then
-                pass "the previous profile survives the failure"
+            if [ "$marker_state" = "True" ]; then
+                pass "the previous profile survives the failure at '$case_name'"
             else
-                fail "the previous profile survives the failure" "$value"
+                fail "the previous profile survives the failure at '$case_name'" \
+                    "$marker_state"
             fi
-            ;;
-        *passphrase_preserved*)
-            value=$(printf '%s' "$line" | sed 's/.*=//')
-            if [ "$value" = "True" ]; then
-                pass "the previous passphrase survives the failure"
+            if [ "$pass_state" = "True" ]; then
+                pass "the previous passphrase survives the failure at '$case_name'"
             else
-                fail "the previous passphrase survives the failure" "$value"
+                fail "the previous passphrase survives the failure at '$case_name'" \
+                    "$pass_state"
             fi
             ;;
     esac

@@ -408,6 +408,40 @@ class RestoreTransactionTest(StateCase):
         with open(marker, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), before)
 
+    def test_an_installation_that_fails_partway_is_rolled_back(self):
+        # The installation moves the live state aside and then fails. The
+        # previous state must be put back: the flag that says the state may
+        # have been moved is set before the move, not after it.
+        before = self._profile_marker()
+        original = backup_module._swap_in
+
+        def broken_swap(layout_arg, staging, rollback):
+            original(layout_arg, staging, rollback)
+            raise OSError("the installation failed")
+
+        backup_module._swap_in = broken_swap
+        try:
+            with self.assertRaises(OSError):
+                backup_module.restore_transaction(
+                    FakeLifecycle(running=True),
+                    self.layout,
+                    self.config,
+                    source=self.source,
+                    assume_yes=True,
+                )
+        finally:
+            backup_module._swap_in = original
+        self.assertEqual(self._profile_marker(), before)
+
+    def test_the_keyring_survives_a_failed_restore(self):
+        before = self._passphrase()
+        lifecycle = FakeLifecycle(running=True, fail_health=True)
+        with self.assertRaises(CloudChromeError):
+            backup_module.restore_transaction(
+                lifecycle, self.layout, self.config, source=self.source, assume_yes=True
+            )
+        self.assertEqual(self._passphrase(), before)
+
 
 class PayloadTest(StateCase):
     """What goes into a backup, and what does not."""

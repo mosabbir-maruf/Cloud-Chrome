@@ -495,6 +495,12 @@ reports success and never leaves a partly installed state. When the previous
 desktop cannot be started either, the rollback state is kept and the message
 says where it is, so the previous data stays recoverable.
 
+The rollback state keeps its own copy of the previous data: the previous
+state is put back by copying it into place, so the recoverable copy is
+still there when the state that was put back turns out to be damaged. A
+failure in the middle of the installation is rolled back too, even when the
+live profile had already been moved aside.
+
 A backup is taken with the stack stopped, because a profile that Chrome is
 still writing to is not a consistent snapshot.
 

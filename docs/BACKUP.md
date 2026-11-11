@@ -101,6 +101,16 @@ desktop could not be started either, which is reported with the path. The
 rollback state is only disposed of once the restore has succeeded and the
 restored desktop has passed its health checks.
 
+The rollback state keeps its **own copy** of the previous data: the
+previous state is put back by copying it into place, not by moving it, so
+the recoverable copy survives even when the state that was put back turns
+out to be damaged. A failure in the middle of the installation is rolled
+back as well — the previous state is put back even when the installation
+failed after the live profile had already been moved aside.
+
+The rollback state is never deleted while a restore is in progress, so an
+interrupted restore leaves the previous data on disk rather than losing it.
+
 **The restore starts the restored desktop.** The transaction is verified
 against a running desktop, because "the profile was restored" is not the
 same as "the profile is usable". A restore therefore leaves the desktop

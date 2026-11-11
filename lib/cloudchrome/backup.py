@@ -665,8 +665,13 @@ def restore_transaction(
             prefix=".cloudchrome-rollback.", dir=layout.persist_dir
         )
         os.chmod(rollback, OWNER_ONLY_DIR)
-        _swap_in(layout, staging, rollback)
+        # The flag is set before the swap, not after it: the swap moves the
+        # live state aside, and it can fail in the middle of that. A failure
+        # after the first move would otherwise leave the live state
+        # replaced and nothing to put back, because the rollback only
+        # restores what the rollback directory actually holds.
         swapped = True
+        _swap_in(layout, staging, rollback)
 
         # 5. Verify the ownership and the permissions.
         _verify_installed(layout)
@@ -834,19 +839,38 @@ def _verify_installed(layout):
 
 
 def _rollback(layout, rollback):
-    """Put the previous state back."""
+    """Put the previous state back.
+
+    The rollback directory keeps its copy of the previous state: the data
+    has to stay recoverable even when the state that was put back turns out
+    to be damaged. The rollback state is only disposed of once a restore
+    has succeeded and the restored desktop has passed its health checks.
+    """
     for name, live in _swappable(layout):
         saved = os.path.join(rollback, name)
         if os.path.isdir(saved):
-            if os.path.exists(live):
-                shutil.rmtree(live, ignore_errors=True)
-            os.replace(saved, live)
+            _replace_tree(saved, live)
     saved_pass = os.path.join(rollback, "keyring.pass")
     if os.path.exists(saved_pass):
         if os.path.exists(layout.keyring_pass_file):
             os.unlink(layout.keyring_pass_file)
-        os.replace(saved_pass, layout.keyring_pass_file)
+        shutil.copy2(saved_pass, layout.keyring_pass_file)
         os.chmod(layout.keyring_pass_file, OWNER_ONLY_FILE)
+
+
+def _replace_tree(source, target):
+    """Replace a directory with a copy of another one.
+
+    The copy is made beside the target and moved into place, so the target
+    is never a partly copied directory and the source is never moved, so
+    the rollback state keeps its copy of the previous data.
+    """
+    temporary = target + ".restoring"
+    shutil.rmtree(temporary, ignore_errors=True)
+    shutil.copytree(source, temporary, symlinks=True)
+    if os.path.exists(target):
+        shutil.rmtree(target, ignore_errors=True)
+    os.replace(temporary, target)
 
 
 # ---------------------------------------------------------------------------
