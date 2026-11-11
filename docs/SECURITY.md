@@ -337,8 +337,44 @@ variable.
 
 | Metric | Value |
 |---|---|
-| Uncompressed image size | 662 073 021 bytes (631 MiB) |
+| Uncompressed image size | 662 197 906 bytes (631 MiB) |
 | Runtime user | `vscode` (uid 1000) |
+
+---
+
+## 4.9 The desktop stack, measured in a Codespace
+
+A real GitHub Codespaces dev container (`basicLinux32gb`, Ubuntu 24.04.3 LTS,
+kernel `6.8.0-1070-azure`) was created from a branch that runs the runtime
+probe. The raw transcript is published as repository issue #19.
+
+| Measurement | Result |
+|---|---|
+| The stack starts | `start` exits 0; the supervisor, the X/VNC server, the D-Bus session bus, the GNOME Keyring, the XFCE session, the noVNC bridge and Chrome are all running |
+| The runtime user | `uid=1000(vscode)`; no sudo rule; `CapBnd=00000000a88425fb` (no `CAP_SYS_ADMIN`) |
+| The RFB port 5900 | listening on `0100007F` and `::1` only; **no non-loopback listener** |
+| The noVNC port 6080 | bound; the client is served from the image and answers `HTTP 200` |
+| The VNC password | the file is mode 0600, 8 bytes; the server offers `VncAuth` only, sends a 16-byte challenge and **rejects a wrong password** |
+| The password rotation | the file changes atomically, stays 8 bytes and mode 0600, and the password is not printed |
+| The secret service | stores and returns a probe secret (`stored=True retrieved=True matched=True`) |
+| Chrome's argument vector | `--user-data-dir=<state>/chrome --password-store=gnome-libsecret --no-first-run --no-default-browser-check --ozone-platform=x11`; no forbidden flag, no DevTools listener |
+| Chrome's sandbox | the browser has `Seccomp=2` and `Seccomp_filters=1`; every zygote and renderer has `NoNewPrivs=1` and `Seccomp=2`, and the renderers run in a **different user namespace** (`user:[4026532291]` against the browser's `user:[4026531837]`) |
+| The backup | written as an age file (`6167`), 104 939 bytes, 125 members, with the VNC password file **absent** |
+| The diagnostics | **all checks pass** (`doctor` exits 0) |
+| The secrets | the keyring passphrase is absent from the logs, from the process table and from every command's output |
+| The host-level limitation | `/proc/sys/abi/ia32_emulation` is not exposed; the `int 0x80` compatibility path stays reachable |
+
+### 4.9.1 The failures that were found this way
+
+The Codespace measurements found four real defects that no other test
+showed, and each of them is now covered by a test that runs in CI:
+
+| Defect | Fix |
+|---|---|
+| The XFCE session exited with code 1, so the supervisor stopped the whole stack and Chrome never really ran | `xfce4-session` rejects every option except `--disable-tcp`, `--help` and `--version`, and the XFCE documentation is explicit that `startxfce4` is the correct entry point. The session is started that way now, and the XDG cache and configuration directories it needs are created with the state |
+| The secret service could not be used: `Object does not exist at path ".../collection/login"` | gnome-keyring activates a second, *locked* daemon on the first client call, and that daemon wins the `org.freedesktop.secrets` name. The runtime waits until its own daemon owns the name and the login keyring exists, and it displaces a competing daemon when there is one |
+| The diagnostics reported that Chrome did not use the libsecret password store, although the command line plainly showed it | Chrome rewrites its argument vector into a single string, so a check that looks at the individual arguments never matches. The checks look at the joined command line |
+| The keyring daemon created no control socket | `GNOME_KEYRING_CONTROL` names the control socket of a daemon that already runs; pointing it at a socket that does not exist yet made the daemon skip creating its own. The variable is now only set when the daemon reported the path or the socket exists |
 
 ---
 
