@@ -73,14 +73,21 @@ else
     fail "the stack reports itself as running" "state=$stack_state"
 fi
 
-# Every component must be running.
-for component in xvnc dbus keyring desktop desktop-wm novnc chrome; do
+# Every component must be running. The window manager is started by the
+# session itself, so it is checked as a process rather than as a component.
+for component in xvnc dbus keyring desktop novnc chrome; do
     if grep -qE "^  ${component} +running" "$WORK/status.txt"; then
         pass "the component '$component' is running"
     else
         fail "the component '$component' is running"
     fi
 done
+
+if pgrep -x xfwm4 > /dev/null 2>&1; then
+    pass "the XFCE window manager is running"
+else
+    fail "the XFCE window manager is running"
+fi
 
 # A component that died is reported with the reason.
 if grep -q "^error:" "$WORK/status.txt"; then
