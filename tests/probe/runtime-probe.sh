@@ -283,11 +283,50 @@ PY
 section "6. The Chrome sandbox"
 # ---------------------------------------------------------------------------
 printf -- '--- the Chrome argument vector ---\n'
-chrome_pid=$(pgrep -f "google-chrome.*--user-data-dir" 2>/dev/null | head -1)
+# Chrome re-executes itself, so the browser is looked up through the process
+# table by its profile directory rather than by the command name.
+chrome_pid=$(python3 -c "
+import os, sys
+sys.path.insert(0, '$REPO_ROOT/lib')
+from cloudchrome.config import load_config
+from cloudchrome.paths import Layout
+from cloudchrome import procs
+
+layout = Layout(load_config())
+marker = '--user-data-dir=%s' % layout.chrome_dir
+for entry in sorted(os.listdir('/proc')):
+    if not entry.isdigit():
+        continue
+    argv = procs.read_cmdline(int(entry))
+    if not argv:
+        continue
+    if marker not in ' '.join(argv):
+        continue
+    if any(a.startswith('--type=') for a in argv):
+        continue
+    print(entry)
+    break
+" 2>/dev/null)
+
 if [ -n "$chrome_pid" ]; then
     tr '\0' ' ' < "/proc/$chrome_pid/cmdline" 2>/dev/null | fold -w 100
     printf '\n--- the per-process sandbox state ---\n'
-    for pid in $(pgrep -f -- "--user-data-dir=" 2>/dev/null); do
+    for pid in $(python3 -c "
+import os, sys
+sys.path.insert(0, '$REPO_ROOT/lib')
+from cloudchrome.config import load_config
+from cloudchrome.paths import Layout
+from cloudchrome import procs
+
+layout = Layout(load_config())
+marker = '--user-data-dir=%s' % layout.chrome_dir
+for entry in sorted(os.listdir('/proc')):
+    if not entry.isdigit():
+        continue
+    argv = procs.read_cmdline(int(entry))
+    if marker in ' '.join(argv):
+        print(entry)
+" 2>/dev/null); do
         [ -r "/proc/$pid/status" ] || continue
         ptype=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -o -- '--type=[a-z-]*' | head -1)
         printf '\n[pid %s] %s\n' "$pid" "${ptype:-browser}"
@@ -296,7 +335,7 @@ if [ -n "$chrome_pid" ]; then
     done
 
     printf '\n--- the forbidden flags ---\n'
-    if tr '\0' '\n' < "/proc/$chrome_pid/cmdline" 2>/dev/null | grep -qE '^--no-sandbox|^--remote-debugging'; then
+    if tr '\0' '\n' < "/proc/$chrome_pid/cmdline" 2>/dev/null | grep -qE '^--no-sandbox|^--remote-debugging|^--disable-setuid-sandbox'; then
         echo "a forbidden flag is present: FAIL"
     else
         echo "no forbidden flag is present: ok"
