@@ -267,9 +267,11 @@ class Supervisor:
             self.layout.xdg_data_home,
         )
         # The keyring creates its control socket in the runtime directory, so
-        # the location is known in advance and can be handed to Chrome.
+        # the location is known in advance and can be handed to Chrome. The
+        # daemon is told nothing about it: the variable names the socket of a
+        # daemon that already runs, and pointing it at a socket that does not
+        # exist yet makes the daemon skip creating its own.
         control_socket = os.path.join(self.layout.xdg_runtime_dir, "keyring")
-        env["GNOME_KEYRING_CONTROL"] = control_socket
 
         # A daemon that already serves the Secret Service has to be
         # displaced: gnome-keyring activates a locked one on the first
@@ -332,8 +334,16 @@ class Supervisor:
         self._secret_check = keyring_policy.verify_secret_service(env)
         self.log("the secret service stored and returned a probe secret")
 
+        # The control socket is where the daemon that owns the name can be
+        # reached. It is only handed to Chrome when the daemon reported it or
+        # when it exists where the daemon puts it.
         if self._keyring_reported:
             self._keyring_control = self._keyring_reported[0]
+        elif os.path.exists(control_socket):
+            self._keyring_control = control_socket
+        else:
+            self._keyring_control = None
+        if self._keyring_control:
             env["GNOME_KEYRING_CONTROL"] = self._keyring_control
 
     def _drain_keyring_output(self, process):

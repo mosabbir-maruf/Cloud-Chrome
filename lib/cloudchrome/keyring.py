@@ -172,6 +172,31 @@ def wait_for_secret_service(env, daemon_pid, keyring_file, timeout=30.0, interva
     )
 
 
+def read_reported_control(process, timeout=15.0):
+    """Read the control socket the daemon reports on its output.
+
+    The daemon prints ``GNOME_KEYRING_CONTROL=<path>`` when it starts. The
+    path is read from there, because the daemon decides where its socket
+    lives.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.stdout is None:
+            return None
+        try:
+            line = process.stdout.readline()
+        except (OSError, ValueError):
+            return None
+        if not line:
+            return None
+        text = line.decode("utf-8", "replace").strip()
+        if text.startswith("GNOME_KEYRING_CONTROL="):
+            return text.split("=", 1)[1].strip()
+    return None
+
+
 def _pid_alive(pid):
     try:
         os.kill(pid, 0)

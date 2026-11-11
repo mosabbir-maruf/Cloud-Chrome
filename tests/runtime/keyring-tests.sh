@@ -106,7 +106,9 @@ passphrase = keyring.read_passphrase(layout.keyring_pass_file)
 
 env = keyring.dbus_environment(
     layout.dbus_socket, layout.xdg_runtime_dir, layout.xdg_data_home)
-env["GNOME_KEYRING_CONTROL"] = os.path.join(layout.xdg_runtime_dir, "keyring")
+# The control socket is not preset: the variable names the socket of a
+# daemon that already runs, and pointing it at a socket that does not exist
+# yet makes the daemon skip creating its own.
 
 log = "/tmp/cloudchrome-keyring-daemon.log"
 daemon = subprocess.Popen(
@@ -176,7 +178,9 @@ config = load_config()
 layout = Layout(config)
 env = keyring.dbus_environment(
     layout.dbus_socket, layout.xdg_runtime_dir, layout.xdg_data_home)
-env["GNOME_KEYRING_CONTROL"] = os.path.join(layout.xdg_runtime_dir, "keyring")
+# The control socket is not preset: the variable names the socket of a
+# daemon that already runs, and pointing it at a socket that does not exist
+# yet makes the daemon skip creating its own.
 daemon_pid = int(open("/tmp/cloudchrome-keyring-daemon.pid").read().strip())
 print("daemon_pid=%d" % daemon_pid)
 print("owner_pid=%s" % keyring.secret_service_owner_pid(env))
@@ -206,7 +210,9 @@ config = load_config()
 layout = Layout(config)
 env = keyring.dbus_environment(
     layout.dbus_socket, layout.xdg_runtime_dir, layout.xdg_data_home)
-env["GNOME_KEYRING_CONTROL"] = os.path.join(layout.xdg_runtime_dir, "keyring")
+# The control socket is not preset: the variable names the socket of a
+# daemon that already runs, and pointing it at a socket that does not exist
+# yet makes the daemon skip creating its own.
 try:
     result = keyring.verify_secret_service(env)
     print("RESULT=works")
