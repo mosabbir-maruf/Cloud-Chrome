@@ -39,33 +39,38 @@ RUN set -eux; \
         echo "Cloud-Chrome supports linux/amd64 only (got '${TARGETARCH:-unknown}')" >&2; \
         exit 1; \
     fi; \
+    # The archive fetch and the install are one unit: when the network is \
+    # briefly unavailable, apt-get update can succeed and still leave an \
+    # empty index, so only a successful install ends the retry loop. \
     for attempt in 1 2 3 4 5; do \
-        if apt-get update; then break; fi; \
+        if apt-get update \
+            && apt-get install -y --no-install-recommends \
+                "tigervnc-standalone-server=${PINNED_TIGERVNC_VERSION}" \
+                "tigervnc-common=${PINNED_TIGERVNC_VERSION}" \
+                "tigervnc-tools=${PINNED_TIGERVNC_VERSION}" \
+                "websockify=${PINNED_WEBSOCKIFY_VERSION}" \
+                "jq=${PINNED_JQ_VERSION}" \
+                xfce4 \
+                xfce4-terminal \
+                dbus-x11 \
+                gnome-keyring \
+                libsecret-1-0 \
+                libsecret-tools \
+                xdotool \
+                fonts-liberation2 \
+                fonts-noto-color-emoji \
+                ca-certificates \
+                curl \
+                wget; then \
+            break; \
+        fi; \
         if [ "$attempt" -eq 5 ]; then \
             echo "the Ubuntu archive could not be reached after five attempts" >&2; \
             exit 1; \
         fi; \
         echo "the archive could not be reached; retrying" >&2; \
-        sleep 10; \
+        sleep 15; \
     done; \
-    apt-get install -y --no-install-recommends \
-        "tigervnc-standalone-server=${PINNED_TIGERVNC_VERSION}" \
-        "tigervnc-common=${PINNED_TIGERVNC_VERSION}" \
-        "tigervnc-tools=${PINNED_TIGERVNC_VERSION}" \
-        "websockify=${PINNED_WEBSOCKIFY_VERSION}" \
-        "jq=${PINNED_JQ_VERSION}" \
-        xfce4 \
-        xfce4-terminal \
-        dbus-x11 \
-        gnome-keyring \
-        libsecret-1-0 \
-        libsecret-tools \
-        xdotool \
-        fonts-liberation2 \
-        fonts-noto-color-emoji \
-        ca-certificates \
-        curl \
-        wget; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
