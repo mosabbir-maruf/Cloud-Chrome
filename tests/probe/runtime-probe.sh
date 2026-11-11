@@ -515,6 +515,219 @@ if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+section "10b. The restore is one transaction"
+# ---------------------------------------------------------------------------
+# The marker is a file Chrome does not manage. The restore starts the
+# desktop again, and Chrome rewrites the files it owns, so the content of
+# such a file cannot be the measure of a restore.
+MARKER="$REPO_ROOT/.cloudchrome/chrome/Default/CloudChromeProbeMarker"
+mkdir -p "$(dirname "$MARKER")"
+printf 'probe-marker' > "$MARKER"
+
+# A backup of the marked profile, taken with the desktop running.
+"$CLI" backup --label "probe transaction" > "$WORK/backup-tx.txt" 2>&1
+kv "the transaction backup exit" "$?"
+tx_backup=$(sed -n 's/^backup written: //p' "$WORK/backup-tx.txt")
+
+if [ -z "$tx_backup" ] || [ ! -f "$tx_backup" ]; then
+    echo "the transaction backup was not written: FAIL"
+else
+    # --- a restore with the desktop running --------------------------------
+    printf 'changed-after-the-backup' > "$MARKER"
+    "$CLI" restore --source "$tx_backup" --yes > "$WORK/restore-live.txt" 2>&1
+    kv "the restore with the desktop running exit" "$?"
+    sed -n '1,4p' "$WORK/restore-live.txt"
+    restored=$(cat "$MARKER" 2>/dev/null)
+    if [ "$restored" = "probe-marker" ]; then
+        echo "the restored profile holds the backed-up marker: ok"
+    else
+        echo "the restored profile holds the backed-up marker: FAIL ($restored)"
+    fi
+    if bash "$CLI" status 2>/dev/null | grep -qE "^stack: *running"; then
+        echo "the desktop is running after the restore: ok"
+    else
+        echo "the desktop is running after the restore: FAIL"
+    fi
+    if bash "$CLI" doctor 2>/dev/null | grep -qE "^Chrome uses the persistent profile +ok"; then
+        echo "the restored profile is the one Chrome uses: ok"
+    else
+        echo "the restored profile is the one Chrome uses: FAIL"
+    fi
+
+    # --- a restore with the desktop stopped -------------------------------
+    bash "$CLI" stop > "$WORK/stop.txt" 2>&1
+    kv "the desktop stops" "$?"
+    printf 'changed-while-the-desktop-was-stopped' > "$MARKER"
+    "$CLI" restore --source "$tx_backup" --yes > "$WORK/restore-stopped.txt" 2>&1
+    kv "the restore with the desktop stopped exit" "$?"
+    sed -n '1,4p' "$WORK/restore-stopped.txt"
+    restored=$(cat "$MARKER" 2>/dev/null)
+    if [ "$restored" = "probe-marker" ]; then
+        echo "the stopped restore holds the backed-up marker: ok"
+    else
+        echo "the stopped restore holds the backed-up marker: FAIL ($restored)"
+    fi
+    if bash "$CLI" status 2>/dev/null | grep -qE "^stack: *running"; then
+        echo "the restore starts the restored desktop: ok"
+    else
+        echo "the restore starts the restored desktop: FAIL"
+    fi
+
+    # --- a refused restore leaves the state alone -------------------------
+    before=$(cat "$MARKER" 2>/dev/null)
+    cp "$tx_backup" "$WORK/corrupt.tar.gz.age"
+    # A byte is flipped in the encrypted header, so the archive cannot be
+    # decrypted at all.
+    printf '\x00' | dd of="$WORK/corrupt.tar.gz.age" bs=1 seek=200 count=1 conv=notrunc status=none
+    "$CLI" restore --source "$WORK/corrupt.tar.gz.age" --yes > "$WORK/restore-bad.txt" 2>&1
+    rc=$?
+    kv "the refused restore exit" "$rc"
+    if [ "$rc" -ne 0 ]; then
+        echo "a restore that cannot be decrypted is refused: ok"
+    else
+        echo "a restore that cannot be decrypted is refused: FAIL"
+    fi
+    after=$(cat "$MARKER" 2>/dev/null)
+    if [ "$after" = "$before" ]; then
+        echo "the state is unchanged after the refused restore: ok"
+    else
+        echo "the state is unchanged after the refused restore: FAIL ($after)"
+    fi
+
+    # --- the rollback state is kept after a failure -----------------------
+    kept=$(find "$REPO_ROOT/.cloudchrome" -maxdepth 1 -name '.cloudchrome-rollback.*' 2>/dev/null | wc -l)
+    kv "the rollback directories kept after the failures" "$kept"
+
+    # --- a failure inside the transaction keeps the old state -------------
+    # The failure is injected at the health check, which is the last step
+    # before the restore is finalised. The previous profile, keyring and
+    # passphrase must survive it.
+    python3 - <<'PY' 2>&1 | sed 's/^/    /'
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
+from cloudchrome import backup as backup_module
+from cloudchrome.config import load_config
+from cloudchrome.errors import CloudChromeError
+from cloudchrome.lifecycle import Lifecycle
+from cloudchrome.paths import Layout
+
+config = load_config()
+layout = Layout(config)
+
+
+class Failing:
+    """A lifecycle whose health check fails, like a broken desktop."""
+
+    def __init__(self):
+        self.running = True
+        self.events = []
+
+    def is_running(self):
+        return self.running
+
+    def stop(self, timeout=None):
+        self.events.append("stop")
+        self.running = False
+        return True
+
+    def start(self, if_needed=False, timeout=180):
+        self.events.append("start")
+        self.running = True
+
+    def health(self):
+        self.events.append("health")
+        return {"healthy": False, "problems": ["the injected failure"]}
+
+
+def profile_marker():
+    path = os.path.join(layout.chrome_dir, "Default", "CloudChromeProbeMarker")
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def passphrase():
+    with open(layout.keyring_pass_file, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+backups = sorted(
+    os.path.join(layout.backup_dir, name)
+    for name in os.listdir(layout.backup_dir)
+    if name.endswith(".tar.gz.age")
+)
+source = backups[-1]
+
+with open(os.path.join(layout.chrome_dir, "Default", "CloudChromeProbeMarker"), "w",
+          encoding="utf-8") as handle:
+    handle.write("the-state-before-the-failed-restore")
+
+before_marker = profile_marker()
+before_pass = passphrase()
+
+try:
+    backup_module.restore_transaction(
+        Failing(), layout, config, source=source, assume_yes=True)
+    print("outcome=accepted")
+except CloudChromeError as exc:
+    print("outcome=refused")
+    print("reason=%s" % str(exc)[:160])
+except Exception as exc:  # noqa: BLE001
+    print("outcome=refused")
+    print("reason=%s" % str(exc)[:160])
+
+print("profile_preserved=%s" % (profile_marker() == before_marker))
+print("passphrase_preserved=%s" % (passphrase() == before_pass))
+PY
+
+    # --- no plaintext is left behind --------------------------------------
+    plain=$(find "$REPO_ROOT/.cloudchrome" -name 'backup.tar.gz' 2>/dev/null | wc -l)
+    kv "the plaintext archives left in the state directory" "$plain"
+fi
+
+# ---------------------------------------------------------------------------
+section "10c. The output path is handled safely"
+# ---------------------------------------------------------------------------
+# The output directory must already exist and keeps its own mode: a shared
+# directory such as /tmp is never changed by the runtime.
+before_mode=$(stat -c '%a' /tmp)
+"$CLI" backup --output /tmp/cloudchrome-probe-backup.tar.gz.age > "$WORK/backup-output.txt" 2>&1
+kv "the backup into a shared directory exit" "$?"
+if [ -f /tmp/cloudchrome-probe-backup.tar.gz.age ]; then
+    echo "the backup was written to the shared directory: ok"
+    kv "the mode of the backup in the shared directory" "$(stat -c '%a' /tmp/cloudchrome-probe-backup.tar.gz.age)"
+else
+    echo "the backup was written to the shared directory: FAIL"
+    sed -n '1,3p' "$WORK/backup-output.txt"
+fi
+after_mode=$(stat -c '%a' /tmp)
+if [ "$before_mode" = "$after_mode" ]; then
+    echo "the shared directory keeps its own mode: ok ($after_mode)"
+else
+    echo "the shared directory keeps its own mode: FAIL ($before_mode -> $after_mode)"
+fi
+
+# A symbolic link target is refused.
+ln -sf /tmp/cloudchrome-probe-backup.tar.gz.age /tmp/cloudchrome-probe-link.tar.gz.age
+"$CLI" backup --output /tmp/cloudchrome-probe-link.tar.gz.age > "$WORK/backup-link.txt" 2>&1
+rc=$?
+kv "the refused backup through a symbolic link exit" "$rc"
+if [ "$rc" -ne 0 ]; then
+    echo "a symbolic link target is refused: ok"
+else
+    echo "a symbolic link target is refused: FAIL"
+fi
+
+# A missing directory is refused.
+"$CLI" backup --output /tmp/cloudchrome-probe-absent/backup.tar.gz.age > "$WORK/backup-absent.txt" 2>&1
+rc=$?
+kv "the refused backup into a missing directory exit" "$rc"
+if [ "$rc" -ne 0 ]; then
+    echo "a missing output directory is refused: ok"
+else
+    echo "a missing output directory is refused: FAIL"
+fi
+
+# ---------------------------------------------------------------------------
 section "11. The diagnostics"
 # ---------------------------------------------------------------------------
 "$CLI" doctor
