@@ -270,7 +270,15 @@ class Supervisor:
         # the location is known in advance and can be handed to Chrome.
         control_socket = os.path.join(self.layout.xdg_runtime_dir, "keyring")
         env["GNOME_KEYRING_CONTROL"] = control_socket
-        argv = keyring_policy.keyring_arguments()
+
+        # A daemon that already serves the Secret Service has to be
+        # displaced: gnome-keyring activates a locked one on the first
+        # client call, and that one has no login collection.
+        replace = keyring_policy.secret_service_owner_pid(env) is not None
+        if replace:
+            self.log("a daemon already serves the secret service; displacing it")
+
+        argv = keyring_policy.keyring_arguments(replace=replace)
         process = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -349,14 +357,34 @@ class Supervisor:
             desktop_policy.session_arguments(self.config.display),
             env=env,
         )
-        # The window manager is started explicitly so that the desktop is
-        # usable as soon as the supervisor reports the stack as ready.
-        self.spawn(
-            "desktop-wm",
-            desktop_policy.window_manager_arguments(self.config.display),
-            env=env,
-        )
-        time.sleep(1.0)
+        # The XFCE session starts the window manager itself. The manager is
+        # only started separately when the session does not, so the desktop
+        # never ends up with two of them.
+        if not self._wait_for_window_manager(timeout=20.0):
+            self.spawn(
+                "desktop-wm",
+                desktop_policy.window_manager_arguments(self.config.display),
+                env=env,
+            )
+            time.sleep(1.0)
+
+    def _wait_for_window_manager(self, timeout=20.0):
+        """True when a window manager is running for the desktop."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            component = self.components.get("desktop")
+            if component is not None and not component.alive():
+                return False
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                argv = procs.read_cmdline(int(entry))
+                if not argv:
+                    continue
+                if os.path.basename(argv[0]) in ("xfwm4", "xfwm4.exe"):
+                    return True
+            time.sleep(0.5)
+        return False
 
     def start_novnc(self):
         if not web_policy.novnc_index_present(self.config.novnc_root):

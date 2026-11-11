@@ -375,33 +375,108 @@ same way the probe hook is added.
 
 ---
 
-## 7. Notes carried forward to later phases (not implemented yet)
+## 7. The runtime, as implemented
 
-- **Backup archive member validation (Phase 3).** A restore treats the archive as untrusted
-  input. The design requires a *structured, unambiguous* member-validation strategy: an
-  explicit allow-list of member paths, rejection of every member that is not a regular file
-  or directory (symlinks, hard links, device nodes, FIFOs and sockets are rejected outright),
-  rejection of absolute paths and of `..` traversal components, extraction into a freshly
-  created empty `0700` staging directory that is never reused, extraction of explicitly
-  validated member names only, and `--no-same-owner --no-same-permissions` so archive
-  metadata cannot set ownership or mode. `--keep-directory-symlink` must **not** be used:
-  the GNU tar manual states it *"instructs tar to follow symlinks to directories when
-  extracting from the archive"*, which is the opposite of the required behaviour. The
-  protection comes from rejecting symlink members and from extracting into an empty
-  directory, where tar's default behaviour (remove a same-named symlink, extract a real
-  directory) applies.
-- **No plaintext backup archives are left on disk unnecessarily** (Phase 3): backups are
-  age-encrypted by default, and temporary plaintext artefacts are removed as soon as the
-  encrypted archive is written.
-- **The VNC password file is never part of a backup** (Phase 3).
-- **Secret delivery** (Phase 2): `cloudchrome init` is silent; the VNC password is shown
-  only by the explicit interactive `cloudchrome passwd`, which refuses to print when stdout
-  is not a terminal.
-- **Chrome argument policy** (Phase 2): no user-supplied Chrome flags at all; the assembled
-  argument vector is asserted against a forbidden-flag list before Chrome is launched.
-- **Re-running the experiment**: create a branch from `main` that adds a `postCreateCommand`
-  invoking `tests/probe/sandbox-probe.sh` (and optionally
-  `tests/probe/seccomp-regression.sh`), create a Codespace from that branch, and read the
-  evidence from the repository issue the probe publishes. The `sandbox-probe` workflow does
-  the same thing, but needs a repository secret holding a token with the `codespace` scope,
-  because `codespaces` is not a valid `GITHUB_TOKEN` permission scope.
+The runtime is `bin/cloudchrome` and the package in `lib/cloudchrome/`. The
+separation of concerns is deliberate: the CLI parses arguments and reports,
+the supervisor owns the process lifecycle, and the modules hold one piece of
+shared logic each.
+
+### 7.1 The service lifecycle
+
+| Requirement | How it is met |
+|---|---|
+| One supervisor for the whole stack | `lib/cloudchrome/supervisor.py` starts the X/VNC server, the D-Bus session bus, the GNOME Keyring, the XFCE session and window manager, the noVNC bridge and Chrome, in that order |
+| Dependency order | Every component is verified before the next one starts; the keyring must serve the Secret Service before Chrome is started |
+| Graceful shutdown | SIGTERM and SIGINT stop the components in the reverse order, with a timeout before SIGKILL |
+| Dead-process detection | A component that exits unexpectedly stops the whole stack and is reported, instead of leaving a half-working desktop |
+| No stale PID files | A PID file records the process start time as well as the PID, so a recycled PID is never mistaken for the running supervisor |
+| No duplicate stacks | The supervisor holds an exclusive lock for its whole lifetime; the control lock serialises the mutating commands |
+| Only its own processes are signalled | The process identity is verified before anything is signalled, and only descendants of a recorded PID are terminated |
+
+### 7.2 The secret service
+
+The GNOME Keyring is started with `--unlock --replace`. The `--replace` is not
+optional: gnome-keyring installs a D-Bus service that activates a **second**,
+locked daemon the moment the first client calls the Secret Service, and that
+activated daemon wins the `org.freedesktop.secrets` name. It never received the
+unlock passphrase, so it has no login collection and every store fails with
+*Object does not exist at path .../collection/login*.
+
+The runtime therefore waits until **its own** daemon owns the name and the
+login keyring exists before any client call happens. The name owner is asked
+from the bus directly, because a daemon that is alive but lost the race
+satisfies every other check.
+
+The passphrase is written to the daemon's standard input and is never in the
+process table, in a log or in the environment.
+
+### 7.3 The backup archive is untrusted input
+
+A restore validates every member **before** anything is extracted:
+
+| Rule | What it refuses |
+|---|---|
+| the name is relative | `/etc/passwd` |
+| the name has no `..` component | `../../etc/passwd` |
+| the name has no backslash | `chrome\file` |
+| the member is a regular file or a directory | symbolic links, hard links, device nodes, FIFOs, sockets |
+| the member is in the approved set | anything outside `chrome/`, `keyring/` and the two top-level files |
+| the member appears once | a duplicate path |
+| the staging directory is empty | an extraction into a reused directory |
+
+The extraction writes every file with the runtime's own permissions and never
+follows a symbolic link, so a link in the archive cannot be used to write
+outside the staging directory. The ownership and the permissions of the
+archive are never trusted.
+
+The temporary plaintext archive is overwritten and removed as soon as the
+restore is done, and it never leaves a private mode-0700 directory.
+
+### 7.4 The restore is transactional
+
+The current profile and keyring are moved aside, the staged state is
+installed, and any failure puts the old state back. A failed restore never
+leaves a partly replaced profile and never loses the previous keyring, and
+the exact failure is reported.
+
+### 7.5 The pruning stays inside the managed area
+
+Only the files in the managed backup directory that carry the Cloud-Chrome
+backup name are considered. A symbolic link is never followed, a file outside
+the directory is never touched, an explicit retention policy is required, the
+files that are about to be deleted are shown, and the newest backup is never
+pruned.
+
+### 7.6 The secret delivery
+
+`cloudchrome init` is silent and never prompts. The VNC password is shown
+only by the explicit interactive `cloudchrome passwd`, which refuses to print
+when stdout is not a terminal — and then does not change the password either,
+because a password that was changed and cannot be shown would lock the user
+out of their own desktop.
+
+### 7.7 The Chrome argument policy
+
+No user-supplied Chrome flags at all. The argument vector is assembled in one
+place and asserted against a forbidden-flag list before Chrome is launched:
+no `--no-sandbox`, no remote debugging, no plaintext password store and no
+user data directory other than the persistent one.
+
+### 7.8 The failure paths
+
+The failures are injected with real failures rather than with hooks: a missing
+or invalid VNC password file, a keyring passphrase file with unsafe
+permissions, an unreadable profile directory, a corrupt backup, and a SIGTERM
+delivered to the supervisor while the stack is still coming up. Each one must
+be refused, must leave the user's data intact and must not leave a stale PID
+file or a leftover process behind.
+
+### 7.9 Re-running the experiment
+
+Create a branch from `main` that adds a `postCreateCommand` invoking
+`tests/probe/runtime-probe.sh`, create a Codespace from that branch, and read
+the evidence from the repository issue the probe publishes. The
+`runtime-probe` workflow does the same thing, but needs a repository secret
+holding a token with the `codespace` scope, because `codespaces` is not a
+valid `GITHUB_TOKEN` permission scope.

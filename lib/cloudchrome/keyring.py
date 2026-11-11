@@ -72,31 +72,35 @@ def dbus_environment(socket_path, runtime_dir, data_home):
     return env
 
 
-def keyring_arguments():
+def keyring_arguments(replace=False):
     """The argument vector of the keyring daemon.
 
     ``--unlock`` unlocks the login keyring, reading the passphrase from
     standard input, and creates the login keyring when it does not exist
     yet. The passphrase is therefore never visible in the process table.
 
-    ``--replace`` is required. gnome-keyring installs a D-Bus service that
-    activates a second, *locked* daemon the moment the first client calls the
-    Secret Service, and that activated daemon wins the
-    ``org.freedesktop.secrets`` name. The daemon that never received the
-    passphrase has no login collection, so every store fails with
+    ``--replace`` makes the daemon displace a daemon that already serves the
+    Secret Service. gnome-keyring installs a D-Bus service that activates a
+    second, *locked* daemon the moment the first client calls the Secret
+    Service, and that activated daemon wins the
+    ``org.freedesktop.secrets`` name. It never received the unlock
+    passphrase, so it has no login collection and every store fails with
     "Object does not exist at path .../collection/login". ``--replace``
     displaces the activated daemon instead.
+
+    ``--replace`` only works when the daemon it displaces can be found
+    through the control socket, so it is used when a competing daemon was
+    actually seen. Without a competing daemon it is left out, because a
+    replacement that finds nothing to replace is not what is wanted.
 
     ``--foreground`` keeps the daemon as a child of the supervisor, so the
     supervisor owns its lifecycle.
     """
-    return [
-        "gnome-keyring-daemon",
-        "--foreground",
-        "--unlock",
-        "--replace",
-        "--components=secrets",
-    ]
+    arguments = ["gnome-keyring-daemon", "--foreground", "--unlock"]
+    if replace:
+        arguments.append("--replace")
+    arguments.append("--components=secrets")
+    return arguments
 
 
 def secret_service_owner_pid(env, timeout=10):

@@ -10,11 +10,15 @@ import os
 
 
 def session_arguments(display):
-    """The argument vector of the XFCE session manager."""
-    return [
-        "xfce4-session",
-        "--session=cloudchrome-%s" % display.lstrip(":"),
-    ]
+    """The argument vector of the XFCE session manager.
+
+    The session name becomes a directory name under the session cache, so it
+    is reduced to characters that are safe in a path.
+    """
+    name = "cloudchrome%s" % "".join(
+        character if character.isalnum() else "-" for character in display
+    )
+    return ["xfce4-session", "--session=%s" % name]
 
 
 def window_manager_arguments(display):
