@@ -130,11 +130,19 @@ class Lifecycle:
         except OSError as exc:
             raise CloudChromeError("cannot open %s: %s" % (log_path, exc)) from exc
 
+        # The state file of a previous stack still says "running". It is
+        # removed first, so that the wait below cannot be satisfied by a
+        # state that belongs to a stack that is no longer there.
+        try:
+            os.unlink(self.layout.supervisor_state_file)
+        except OSError:
+            pass
+
         try:
             import subprocess
             import sys
 
-            subprocess.Popen(
+            process = subprocess.Popen(
                 [sys.executable, "-m", "cloudchrome.supervisor"],
                 stdin=subprocess.DEVNULL,
                 stdout=handle,
@@ -151,6 +159,12 @@ class Lifecycle:
         while time.monotonic() < deadline:
             state = self.state()
             if state:
+                # The state must belong to the supervisor that was just
+                # started: a state left by an earlier stack says nothing
+                # about this one.
+                if state.get("supervisor_pid") != process.pid:
+                    time.sleep(0.2)
+                    continue
                 if state.get("state") == "running":
                     return
                 if state.get("state") == "failed":

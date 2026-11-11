@@ -373,37 +373,35 @@ def command_doctor(args, config):
             "Chrome is running",
             bool(components.get("chrome", {}).get("running")),
         )
-        # The browser process is looked up through the process table rather
-        # than through the supervisor's record, because Chrome re-executes
-        # itself and the recorded PID is not always the browser.
+        # The browser itself is looked up in the process table, because a
+        # recorded component can be stale.
         browser = _find_browser_process(layout)
-        if browser is not None:
-            browser_pid, browser_argv = browser
-            # Chrome rewrites its argument vector into a single string, so a
-            # check that looks at the individual arguments never matches. The
-            # flags are therefore read from the vector the supervisor
-            # recorded when it launched the browser, which is the vector the
-            # runtime actually used.
-            recorded = _recorded_chrome_argv(layout)
-            vector = recorded or browser_argv
+        check("the Chrome browser process was found", browser is not None)
+        # The flags are read from the argument vector the supervisor
+        # recorded when it launched the browser. Chrome rewrites its own
+        # argument vector, so the live process is not a reliable source for
+        # them, and the recorded vector is the one the runtime actually
+        # used.
+        recorded = _recorded_chrome_argv(layout)
+        if recorded:
             forbidden = [
                 argument
-                for argument in vector
+                for argument in recorded
                 if argument.split("=", 1)[0] in chrome_policy.FORBIDDEN_FLAGS
             ]
             check("Chrome runs without forbidden flags", not forbidden, ",".join(forbidden))
             check(
                 "Chrome uses the libsecret password store",
-                "--password-store=gnome-libsecret" in vector,
-                " ".join(vector[:4]),
+                "--password-store=gnome-libsecret" in recorded,
+                " ".join(recorded[:4]),
             )
             check(
                 "Chrome uses the persistent profile",
-                "--user-data-dir=%s" % layout.chrome_dir in vector,
+                "--user-data-dir=%s" % layout.chrome_dir in recorded,
             )
             check("Chrome has no DevTools listener", _no_devtools_listener())
         else:
-            check("the Chrome browser process was found", False)
+            check("the Chrome argument vector was recorded", False)
 
     # --- the logs -----------------------------------------------------------
     # The logs must never carry a secret.
