@@ -25,13 +25,144 @@ export PYTHONPATH="$REPO_ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
 CLI="$REPO_ROOT/bin/cloudchrome"
 
 section() { printf '\n########## %s ##########\n' "$1"; }
+
+publish_via_issue() {
+    local token="$1" body_file=/tmp/probe-issue.md json_file=/tmp/probe-issue.json
+    {
+        echo "## Cloud-Chrome runtime probe evidence"
+        echo
+        echo '```'
+        head -c 50000 "$EVIDENCE_FILE"
+        echo '```'
+    } > "$body_file"
+    python3 -c 'import json,sys;print(json.dumps({"title":"Cloud-Chrome runtime probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' "$body_file" > "$json_file"
+    status=$(curl -sS -o /tmp/probe-issue-resp.json -w '%{http_code}' -X POST \
+        -H "Authorization: Bearer ${token}" \
+        -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+        --data @"$json_file" \
+        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt)
+    echo "issue publication HTTP status: ${status}"
+    if [ "${status}" = "201" ]; then
+        echo "published as an issue: $(jq -r '.html_url' /tmp/probe-issue-resp.json 2>/dev/null)"
+    else
+        echo "issue publication failed: $(head -c 300 /tmp/probe-issue-resp.json 2>/dev/null)"
+    fi
+    rm -f "$body_file" "$json_file" /tmp/probe-issue-resp.json /tmp/probe-issue-err.txt
+    [ "${status}" = "201" ]
+}
+
+publish_via_git() {
+    # The Codespaces token is a REST API credential, not a git credential,
+    # and the container has no repository token by default. The git
+    # credentials of the Codespace do work, so the evidence is committed to
+    # a branch of the repository.
+    #
+    # The commit is made on the current branch on purpose: creating a new
+    # branch inside the workspace is a bigger operation than the Codespaces
+    # credentials are set up for.
+    local branch="$1"
+    (
+        cd "$REPO_ROOT" || exit 1
+        git config user.email "codespace@users.noreply.github.com" 2>&1
+        git config user.name "Cloud-Chrome probe" 2>&1
+        cp "$EVIDENCE_FILE" "$REPO_ROOT/probe-evidence.txt" 2>&1
+        git add probe-evidence.txt 2>&1
+        if git diff --cached --quiet; then
+            echo "nothing to commit: the evidence is unchanged" >&2
+            exit 1
+        fi
+        git commit -q -m "chore(probe): record the runtime probe evidence" 2>&1
+        echo "pushing to $branch" >&2
+        # The outcome of the push is recorded in the commit message, so a
+        # failure says why without a readable log.
+        if git push origin "HEAD:refs/heads/${branch}" > "$WORK/push.log" 2>&1; then
+            git commit -q --amend -m "chore(probe): record the runtime probe evidence
+
+pushed to ${branch}" 2>&1
+            git push -f -q origin "HEAD:refs/heads/${branch}" >/dev/null 2>&1
+            echo "pushed to $branch" >&2
+            exit 0
+        fi
+        detail=$(tr '\n' ' ' < "$WORK/push.log" | cut -c1-300)
+        git commit -q --amend -m "chore(probe): record the runtime probe evidence
+
+the push failed: ${detail}" 2>&1
+        git push -f -q origin "HEAD:refs/heads/${branch}" >/dev/null 2>&1
+        echo "the push failed: $detail" >&2
+        exit 1
+    )
+}
+
+# The branch the Codespace was created from. A Codespace checkout can be
+# detached, so the upstream tracking branch is used when the current branch
+# is not a real branch.
+probe_branch() {
+    local branch
+    branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+        branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)
+        branch="${branch#origin/}"
+    fi
+    if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+        branch="probe/evidence"
+    fi
+    printf '%s\n' "$branch"
+}
+
+# Publish the evidence, whichever way is available in this container.
+publish_evidence() {
+    local published=false
+    if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" != "1" ]; then
+        echo "publishing not requested"
+        return 0
+    fi
+
+    local token="${GITHUB_TOKEN:-${PROBE_GIT_TOKEN:-}}"
+    local repository="${GITHUB_REPOSITORY:-}"
+    if [ -z "$token" ] && command -v gh > /dev/null 2>&1; then
+        # The Codespaces image authenticates the gh CLI with the user's
+        # token, which is a usable repository credential.
+        token=$(gh auth token 2>/dev/null || true)
+        repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+    fi
+    if [ -n "$token" ] && [ -n "$repository" ]; then
+        GITHUB_REPOSITORY="$repository"
+        export GITHUB_REPOSITORY
+        if publish_via_issue "$token"; then
+            published=true
+        fi
+    else
+        echo "no repository token in the container; publishing through git instead"
+    fi
+    if [ "$published" != "true" ]; then
+        local branch="${CLOUDCHROME_PROBE_BRANCH:-$(probe_branch)}"
+        if publish_via_git "$branch"; then
+            echo "published as a branch: $branch"
+            published=true
+        else
+            echo "the evidence could not be published"
+        fi
+    fi
+    echo "published=$published"
+}
+
 kv() { printf '%-46s %s\n' "$1" "${2:-<empty>}"; }
 
 cleanup() {
     bash "$CLI" stop >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
-trap cleanup EXIT
+
+# The evidence is published however this script ends, so a failure is
+# visible from outside as well, and the desktop stack is always stopped.
+on_exit() {
+    local status=$?
+    trap - EXIT
+    publish_evidence
+    cleanup
+    exit "$status"
+}
+trap on_exit EXIT
 
 # ---------------------------------------------------------------------------
 section "1. Environment"
@@ -376,120 +507,4 @@ kv "syscall isolation" "PARTIAL: the int 0x80 compatibility path stays reachable
 # ---------------------------------------------------------------------------
 section "15. Publishing the evidence"
 # ---------------------------------------------------------------------------
-publish_via_issue() {
-    local token="$1" body_file=/tmp/probe-issue.md json_file=/tmp/probe-issue.json
-    {
-        echo "## Cloud-Chrome runtime probe evidence"
-        echo
-        echo '```'
-        head -c 50000 "$EVIDENCE_FILE"
-        echo '```'
-    } > "$body_file"
-    python3 -c 'import json,sys;print(json.dumps({"title":"Cloud-Chrome runtime probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' "$body_file" > "$json_file"
-    status=$(curl -sS -o /tmp/probe-issue-resp.json -w '%{http_code}' -X POST \
-        -H "Authorization: Bearer ${token}" \
-        -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
-        --data @"$json_file" \
-        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt)
-    echo "issue publication HTTP status: ${status}"
-    if [ "${status}" = "201" ]; then
-        echo "published as an issue: $(jq -r '.html_url' /tmp/probe-issue-resp.json 2>/dev/null)"
-    else
-        echo "issue publication failed: $(head -c 300 /tmp/probe-issue-resp.json 2>/dev/null)"
-    fi
-    rm -f "$body_file" "$json_file" /tmp/probe-issue-resp.json /tmp/probe-issue-err.txt
-    [ "${status}" = "201" ]
-}
-
-publish_via_git() {
-    # The Codespaces token is a REST API credential, not a git credential,
-    # and the container has no repository token by default. The git
-    # credentials of the Codespace do work, so the evidence is committed to
-    # a branch of the repository.
-    #
-    # The commit is made on the current branch on purpose: creating a new
-    # branch inside the workspace is a bigger operation than the Codespaces
-    # credentials are set up for.
-    local branch="$1"
-    (
-        cd "$REPO_ROOT" || exit 1
-        git config user.email "codespace@users.noreply.github.com" 2>&1
-        git config user.name "Cloud-Chrome probe" 2>&1
-        cp "$EVIDENCE_FILE" "$REPO_ROOT/probe-evidence.txt" 2>&1
-        git add probe-evidence.txt 2>&1
-        if git diff --cached --quiet; then
-            echo "nothing to commit: the evidence is unchanged" >&2
-            exit 1
-        fi
-        git commit -q -m "chore(probe): record the runtime probe evidence" 2>&1
-        echo "pushing to $branch" >&2
-        # The outcome of the push is recorded in the commit message, so a
-        # failure says why without a readable log.
-        if git push origin "HEAD:refs/heads/${branch}" > "$WORK/push.log" 2>&1; then
-            git commit -q --amend -m "chore(probe): record the runtime probe evidence
-
-pushed to ${branch}" 2>&1
-            git push -f -q origin "HEAD:refs/heads/${branch}" >/dev/null 2>&1
-            echo "pushed to $branch" >&2
-            exit 0
-        fi
-        detail=$(tr '\n' ' ' < "$WORK/push.log" | cut -c1-300)
-        git commit -q --amend -m "chore(probe): record the runtime probe evidence
-
-the push failed: ${detail}" 2>&1
-        git push -f -q origin "HEAD:refs/heads/${branch}" >/dev/null 2>&1
-        echo "the push failed: $detail" >&2
-        exit 1
-    )
-}
-
-# The branch the Codespace was created from. A Codespace checkout can be
-# detached, so the upstream tracking branch is used when the current branch
-# is not a real branch.
-probe_branch() {
-    local branch
-    branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-    if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
-        branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)
-        branch="${branch#origin/}"
-    fi
-    if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
-        branch="probe/evidence"
-    fi
-    printf '%s\n' "$branch"
-}
-
-published=false
-if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ]; then
-    token="${GITHUB_TOKEN:-${PROBE_GIT_TOKEN:-}}"
-    repository="${GITHUB_REPOSITORY:-}"
-    if [ -z "$token" ] && command -v gh > /dev/null 2>&1; then
-        # The Codespaces image authenticates the gh CLI with the user's
-        # token, which is a usable repository credential.
-        token=$(gh auth token 2>/dev/null || true)
-        repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
-    fi
-    if [ -n "$token" ] && [ -n "$repository" ]; then
-        GITHUB_REPOSITORY="$repository"
-        export GITHUB_REPOSITORY
-        if publish_via_issue "$token"; then
-            published=true
-        fi
-    else
-        echo "no repository token in the container; publishing through git instead"
-    fi
-    if [ "$published" != "true" ]; then
-        branch="${CLOUDCHROME_PROBE_BRANCH:-$(probe_branch)}"
-        if publish_via_git "$branch"; then
-            echo "published as a branch: $branch"
-            published=true
-        else
-            echo "the evidence could not be published"
-        fi
-    fi
-    echo "published=$published"
-else
-    echo "publishing not requested"
-fi
-
 section "END OF EVIDENCE"
