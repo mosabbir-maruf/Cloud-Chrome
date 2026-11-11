@@ -422,22 +422,33 @@ publish_via_git() {
             exit 1
         fi
         git commit -q -m "chore(probe): record the runtime probe evidence" 2>&1
-        git push -q origin "HEAD:refs/heads/${branch}" 2>&1
+        echo "pushing to $branch" >&2
+        git push origin "HEAD:refs/heads/${branch}" 2>&1
         echo "pushed to $branch" >&2
         exit 0
     )
+}
+
+# The branch the Codespace was created from. A Codespace checkout can be
+# detached, so the upstream tracking branch is used when the current branch
+# is not a real branch.
+probe_branch() {
+    local branch
+    branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+        branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)
+        branch="${branch#origin/}"
+    fi
+    if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+        branch="probe/evidence"
+    fi
+    printf '%s\n' "$branch"
 }
 
 published=false
 if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ]; then
     token="${GITHUB_TOKEN:-${PROBE_GIT_TOKEN:-}}"
     repository="${GITHUB_REPOSITORY:-}"
-    if [ -z "$token" ] && command -v gh > /dev/null 2>&1; then
-        # The Codespaces image authenticates the gh CLI with the user's
-        # token, which is a usable repository credential.
-        token=$(gh auth token 2>/dev/null || true)
-        repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
-    fi
     if [ -n "$token" ] && [ -n "$repository" ]; then
         GITHUB_REPOSITORY="$repository"
         export GITHUB_REPOSITORY
@@ -448,7 +459,7 @@ if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ]; then
         echo "no repository token in the container; publishing through git instead"
     fi
     if [ "$published" != "true" ]; then
-        branch="${CLOUDCHROME_PROBE_BRANCH:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)}"
+        branch="${CLOUDCHROME_PROBE_BRANCH:-$(probe_branch)}"
         if publish_via_git "$branch"; then
             echo "published as a branch: $branch"
             published=true
