@@ -497,9 +497,15 @@ if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
     # The archive is listed once and the listing is searched. Piping the
     # decryption straight into 'grep -q' makes grep close the pipe early, the
     # producer dies of SIGPIPE, and the check reports a false failure.
+    #
+    # Only the first members are shown: a full listing would be longer than
+    # the evidence the issue can carry, and the count is the measure that
+    # matters.
     members=$(age --decrypt --identity "$REPO_ROOT/.cloudchrome/keys/backup-identity.txt" \
         "$backup_file" 2>/dev/null | tar -tzf - 2>/dev/null | sort)
-    printf '%s\n' "$members"
+    member_count=$(printf '%s\n' "$members" | wc -l)
+    printf 'the archive holds %s members; the first 30 follow\n' "$member_count"
+    printf '%s\n' "$members" | head -30
     printf -- '\n--- the desktop is running again after the backup ---\n'
     if bash "$CLI" status 2>/dev/null | grep -qE "^stack: *running"; then
         echo "the desktop is running again after the backup: ok"
