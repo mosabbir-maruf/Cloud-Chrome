@@ -160,6 +160,14 @@ printf 'new-file' > "$state/chrome/Default/Extra"
 
 "$CLI" restore --source "$backup_file" --yes > "$WORK/restore.txt" 2>&1
 rc=$?
+if [ "$rc" -ne 0 ]; then
+    printf -- '\n--- the component logs ---\n'
+    for log in "$state/logs"/*.log; do
+        [ -e "$log" ] || continue
+        printf -- '\n=== %s ===\n' "$(basename "$log")"
+        tail -25 "$log" | sed 's/^/      /'
+    done
+fi
 if [ "$rc" -eq 0 ]; then
     pass "restore succeeds" "$(grep 'restored from' "$WORK/restore.txt")"
 else
@@ -197,13 +205,15 @@ import os, sys
 sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
 from cloudchrome import backup
 from cloudchrome.config import load_config
+from cloudchrome.lifecycle import Lifecycle
 from cloudchrome.paths import Layout
 from cloudchrome.errors import IntegrityError
 
 config = load_config()
 layout = Layout(config)
 try:
-    backup.restore_backup(
+    backup.restore_transaction(
+        Lifecycle(config, layout),
         layout,
         config,
         source=None,
@@ -344,6 +354,7 @@ import io, os, subprocess, sys, shutil, tarfile
 sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
 from cloudchrome import backup
 from cloudchrome.config import load_config
+from cloudchrome.lifecycle import Lifecycle
 from cloudchrome.paths import Layout
 from cloudchrome.errors import IntegrityError
 
@@ -385,7 +396,13 @@ with tarfile.open(plaintext, "r:gz") as handle, tarfile.open(corrupted, "w:gz") 
         out.addfile(info, io.BytesIO(data))
 
 try:
-    backup.restore_backup(layout, config, source=corrupted, assume_yes=True)
+    backup.restore_transaction(
+        Lifecycle(config, layout),
+        layout,
+        config,
+        source=corrupted,
+        assume_yes=True,
+    )
     print("RESULT=accepted")
 except IntegrityError as exc:
     print("RESULT=refused")

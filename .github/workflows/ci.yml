@@ -584,6 +584,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm -i \
+            --security-opt "seccomp=$PWD/.devcontainer/seccomp/chrome.json" \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
             -v "$PWD:/repo:ro" \
@@ -596,6 +597,7 @@ jobs:
           # The backup, the restore and the transaction, with and without a
           # running desktop stack, and the failure paths of the restore.
           docker run --rm -i \
+            --security-opt "seccomp=$PWD/.devcontainer/seccomp/chrome.json" \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-backup/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-backup/.cloudchrome/run \
             -v "$PWD:/repo:ro" \
@@ -606,6 +608,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm -i \
+            --security-opt "seccomp=$PWD/.devcontainer/seccomp/chrome.json" \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
             -v "$PWD:/repo:ro" \

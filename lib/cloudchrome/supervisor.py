@@ -156,6 +156,7 @@ class Supervisor:
                 "start_time": component.start_time,
                 "running": component.alive(),
                 "log": os.path.join(self.layout.log_dir, "%s.log" % component.log_name),
+                "argv": list(component.argv),
             }
         try:
             os.makedirs(self.layout.runtime_dir, mode=OWNER_ONLY_DIR, exist_ok=True)

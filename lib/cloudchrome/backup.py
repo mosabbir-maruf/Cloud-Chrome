@@ -58,6 +58,16 @@ BACKUP_SUFFIX = ".tar.gz.age"
 # The VNC password file is never part of a backup.
 EXCLUDED_NAMES = ("vnc.pass",)
 
+# Chrome's singleton files record that an instance is running. They are
+# runtime state, not user data: restoring them would make Chrome refuse to
+# start, because it would believe another instance already holds the
+# profile.
+CHROME_SINGLETON_FILES = (
+    "SingletonCookie",
+    "SingletonLock",
+    "SingletonSocket",
+)
+
 
 # ---------------------------------------------------------------------------
 # the age identity
@@ -127,9 +137,15 @@ def _collect_payload(layout):
     chrome = layout.chrome_dir
     if os.path.isdir(chrome):
         for relative in archive_module.directory_members(chrome):
+            if os.path.basename(relative) in CHROME_SINGLETON_FILES:
+                # The singleton files are runtime state, not user data.
+                continue
             members.append(("chrome/%s" % relative, os.path.join(chrome, relative)))
 
-    keyring = layout.keyring_dir
+    # The keyring data lives under the XDG data directory, because that is
+    # what the keyring daemon is told to use. Backing up any other directory
+    # would capture nothing and restore nothing.
+    keyring = layout.keyring_store_dir
     if os.path.isdir(keyring):
         for relative in archive_module.directory_members(keyring):
             members.append(
@@ -692,15 +708,26 @@ def _swap_in(layout, staging, rollback):
     Only the parts that the archive actually contains are replaced, so an
     archive without a profile does not destroy the live one.
     """
-    for name in ("chrome", "keyring"):
+    for name, live in _swappable(layout):
         staged = os.path.join(staging, name)
-        live = getattr(layout, "%s_dir" % name)
         if not os.path.isdir(staged):
             continue
         saved = os.path.join(rollback, name)
         if os.path.exists(live):
             os.replace(live, saved)
         os.replace(staged, live)
+
+    # A restored profile must not carry Chrome's singleton files: Chrome would
+    # believe another instance already holds the profile and refuse to start.
+    staged_chrome = os.path.join(staging, "chrome")
+    if os.path.isdir(staged_chrome):
+        for name in CHROME_SINGLETON_FILES:
+            stale = os.path.join(staged_chrome, name)
+            if os.path.lexists(stale):
+                try:
+                    os.unlink(stale)
+                except OSError:
+                    pass
 
     staged_pass = os.path.join(staging, "keyring.pass")
     if os.path.isfile(staged_pass):
@@ -709,6 +736,18 @@ def _swap_in(layout, staging, rollback):
             os.replace(layout.keyring_pass_file, saved_pass)
         os.replace(staged_pass, layout.keyring_pass_file)
         os.chmod(layout.keyring_pass_file, OWNER_ONLY_FILE)
+
+
+def _swappable(layout):
+    """The parts of the state that a restore replaces.
+
+    The keyring data lives under the XDG data directory, because that is
+    what the keyring daemon is told to use.
+    """
+    return (
+        ("chrome", layout.chrome_dir),
+        ("keyring", layout.keyring_store_dir),
+    )
 
 
 def _dispose_rollback(rollback):
@@ -768,9 +807,8 @@ def _verify_installed(layout):
 
 def _rollback(layout, rollback):
     """Put the previous state back."""
-    for name in ("chrome", "keyring"):
+    for name, live in _swappable(layout):
         saved = os.path.join(rollback, name)
-        live = getattr(layout, "%s_dir" % name)
         if os.path.isdir(saved):
             if os.path.exists(live):
                 shutil.rmtree(live, ignore_errors=True)

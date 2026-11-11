@@ -374,6 +374,43 @@ class RestoreTransactionTest(StateCase):
         self.assertEqual(leftovers, [])
 
 
+class PayloadTest(StateCase):
+    """What goes into a backup, and what does not."""
+
+    def setUp(self):
+        super().setUp()
+        self.make_profile()
+        # A profile that Chrome has used carries the singleton files.
+        for name in ("SingletonCookie", "SingletonLock", "SingletonSocket"):
+            with open(os.path.join(self.layout.chrome_dir, name), "w", encoding="utf-8") as handle:
+                handle.write("x")
+
+    def test_the_vnc_password_is_not_in_the_payload(self):
+        names = [name for name, _absolute in backup_module._collect_payload(self.layout)]
+        self.assertNotIn("vnc.pass", names)
+
+    def test_the_singleton_files_are_not_in_the_payload(self):
+        names = [name for name, _absolute in backup_module._collect_payload(self.layout)]
+        for singleton in backup_module.CHROME_SINGLETON_FILES:
+            self.assertNotIn("chrome/%s" % singleton, names)
+
+    def test_the_keyring_data_is_in_the_payload(self):
+        store = os.path.join(self.layout.keyring_store_dir, "login.keyring")
+        os.makedirs(self.layout.keyring_store_dir, exist_ok=True)
+        with open(store, "w", encoding="utf-8") as handle:
+            handle.write("keyring")
+        names = [name for name, _absolute in backup_module._collect_payload(self.layout)]
+        self.assertIn("keyring/login.keyring", names)
+
+    def test_the_profile_is_in_the_payload(self):
+        names = [name for name, _absolute in backup_module._collect_payload(self.layout)]
+        self.assertIn("chrome/Default/Cookies", names)
+
+    def test_the_passphrase_is_in_the_payload(self):
+        names = [name for name, _absolute in backup_module._collect_payload(self.layout)]
+        self.assertIn("keyring.pass", names)
+
+
 class RestoreVerificationTest(StateCase):
     """The installed state is verified, and a failure rolls it back."""
 

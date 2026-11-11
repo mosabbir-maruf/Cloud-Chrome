@@ -379,24 +379,27 @@ def command_doctor(args, config):
         browser = _find_browser_process(layout)
         if browser is not None:
             browser_pid, browser_argv = browser
-            # Chrome rewrites its argument vector into a single string, so the
-            # checks are made against the joined command line and not
-            # against the individual arguments.
-            command_line = " ".join(browser_argv)
+            # Chrome rewrites its argument vector into a single string, so a
+            # check that looks at the individual arguments never matches. The
+            # flags are therefore read from the vector the supervisor
+            # recorded when it launched the browser, which is the vector the
+            # runtime actually used.
+            recorded = _recorded_chrome_argv(layout)
+            vector = recorded or browser_argv
             forbidden = [
                 argument
-                for argument in browser_argv
+                for argument in vector
                 if argument.split("=", 1)[0] in chrome_policy.FORBIDDEN_FLAGS
             ]
             check("Chrome runs without forbidden flags", not forbidden, ",".join(forbidden))
             check(
                 "Chrome uses the libsecret password store",
-                "--password-store=gnome-libsecret" in command_line,
-                command_line[:120],
+                "--password-store=gnome-libsecret" in vector,
+                " ".join(vector[:4]),
             )
             check(
                 "Chrome uses the persistent profile",
-                "--user-data-dir=%s" % layout.chrome_dir in command_line,
+                "--user-data-dir=%s" % layout.chrome_dir in vector,
             )
             check("Chrome has no DevTools listener", _no_devtools_listener())
         else:
@@ -464,6 +467,22 @@ def command_doctor(args, config):
 
 def _any_listening_on(port):
     return port in _listening_ports()
+
+
+def _recorded_chrome_argv(layout):
+    """The argument vector the supervisor used to launch Chrome.
+
+    Chrome rewrites its own argument vector, so the live process is not a
+    reliable source for the flags. The supervisor records the vector it used,
+    and that record is what the diagnostics check.
+    """
+    state = _read_state(layout) or {}
+    component = state.get("components", {}).get("chrome", {})
+    recorded = component.get("argv")
+    if not recorded:
+        return []
+    # The recorded vector starts with the binary; the flags follow.
+    return [argument for argument in recorded if argument.startswith("--")]
 
 
 def _find_browser_process(layout):
