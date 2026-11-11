@@ -141,17 +141,22 @@ else
     fail "every manifest hash matches the archive content" "$mismatched mismatches"
 fi
 
+# The archive is listed once. The listing is then searched, because piping a
+# decryption straight into 'grep -q' makes grep close the pipe early, the
+# producer dies of SIGPIPE, and 'pipefail' turns that into a false failure.
+members=$(age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
+    | tar -tzf - 2>/dev/null | sort | tr '\n' ' ')
+note "backup members" "$members"
+
 # The VNC password is never in a backup.
-if age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-    | tar -tzf - 2>/dev/null | grep -q "vnc.pass"; then
+if printf '%s\n' "$members" | grep -q "vnc.pass"; then
     fail "the backup does not contain the VNC password file"
 else
     pass "the backup does not contain the VNC password file"
 fi
 
 # The age identity is never in a backup.
-if age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-    | tar -tzf - 2>/dev/null | grep -q "backup-identity"; then
+if printf '%s\n' "$members" | grep -q "backup-identity"; then
     fail "the backup does not contain the age identity"
 else
     pass "the backup does not contain the age identity"

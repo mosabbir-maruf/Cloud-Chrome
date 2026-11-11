@@ -492,11 +492,14 @@ if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
     kv "the backup is an age file" "$(head -c 2 "$backup_file" | od -An -tx1 | tr -d ' \n')"
     kv "the backup size" "$(stat -c '%s' "$backup_file") bytes"
     printf -- '\n--- the members of the backup ---\n'
-    age --decrypt --identity "$REPO_ROOT/.cloudchrome/keys/backup-identity.txt" \
-        "$backup_file" 2>/dev/null | tar -tzf - 2>/dev/null | head -20
+    # The archive is listed once and the listing is searched. Piping the
+    # decryption straight into 'grep -q' makes grep close the pipe early, the
+    # producer dies of SIGPIPE, and the check reports a false failure.
+    members=$(age --decrypt --identity "$REPO_ROOT/.cloudchrome/keys/backup-identity.txt" \
+        "$backup_file" 2>/dev/null | tar -tzf - 2>/dev/null | sort | tr '\n' ' ')
+    printf '%s\n' "$members"
     printf -- '\n--- the VNC password is not in the backup ---\n'
-    if age --decrypt --identity "$REPO_ROOT/.cloudchrome/keys/backup-identity.txt" \
-        "$backup_file" 2>/dev/null | tar -tzf - 2>/dev/null | grep -q "vnc.pass"; then
+    if printf '%s\n' "$members" | grep -q "vnc.pass"; then
         echo "the VNC password file IS in the backup: FAIL"
     else
         echo "the VNC password file is not in the backup: ok"

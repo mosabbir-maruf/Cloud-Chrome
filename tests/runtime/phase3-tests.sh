@@ -114,22 +114,22 @@ else
     pass "the backup is not a plaintext gzip archive"
 fi
 
+# The archive is listed once. The listing is then searched, because piping a
+# decryption straight into 'grep -q' makes grep close the pipe early, the
+# producer dies of SIGPIPE, and 'pipefail' turns that into a false failure.
+members=$(age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
+    | tar -tzf - 2>/dev/null | sort | tr '\n' ' ')
+
 # The VNC password must never be in the backup.
-if age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-    | tar -tzf - 2>/dev/null | grep -q "vnc.pass"; then
+if printf '%s\n' "$members" | grep -q "vnc.pass"; then
     fail "the backup does not contain the VNC password file"
 else
     pass "the backup does not contain the VNC password file"
 fi
-
-# The expected members must be there.
-members=$(age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-    | tar -tzf - 2>/dev/null | sort | tr '\n' ' ')
 note "backup members" "$members"
 
 for expected in manifest.json keyring.pass chrome/Default/Cookies; do
-    if age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-        | tar -tzf - 2>/dev/null | grep -q "^$expected$"; then
+    if printf '%s\n' "$members" | grep -q "^$expected$"; then
         pass "the backup contains $expected"
     else
         fail "the backup contains $expected"
@@ -137,8 +137,7 @@ for expected in manifest.json keyring.pass chrome/Default/Cookies; do
 done
 
 # The identity must not be in the backup either.
-if age --decrypt --identity "$state/keys/backup-identity.txt" "$backup_file" 2>/dev/null \
-    | tar -tzf - 2>/dev/null | grep -q "backup-identity"; then
+if printf '%s\n' "$members" | grep -q "backup-identity"; then
     fail "the backup does not contain the age identity"
 else
     pass "the backup does not contain the age identity"
