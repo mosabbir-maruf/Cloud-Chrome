@@ -128,6 +128,29 @@ class PathTest(TempStateCase):
         with self.assertRaises(InvalidStateError):
             paths_module.ensure_dir(target)
 
+    def test_ensure_dir_can_tighten_a_loose_directory(self):
+        # 'init' establishes the state, so it restores the permissions of a
+        # directory it owns. The runtime commands do not.
+        target = os.path.join(self.work, "loose")
+        os.makedirs(target)
+        os.chmod(target, 0o755)
+        paths_module.ensure_dir(target, tighten=True)
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o700)
+
+    def test_initialize_tightens_the_state_directory(self):
+        layout = self.layout()
+        os.makedirs(layout.persist_dir, mode=0o755)
+        os.chmod(layout.persist_dir, 0o755)
+        layout.initialize()
+        self.assertEqual(stat.S_IMODE(os.stat(layout.persist_dir).st_mode), 0o700)
+
+    def test_require_initialized_refuses_a_loose_state_directory(self):
+        layout = self.layout()
+        layout.initialize()
+        os.chmod(layout.persist_dir, 0o755)
+        with self.assertRaises(InvalidStateError):
+            layout.require_initialized()
+
     def test_ensure_dir_refuses_a_symlink(self):
         real = os.path.join(self.work, "real")
         os.makedirs(real)

@@ -46,12 +46,20 @@ def is_symlink(path):
     return info is not None and stat.S_ISLNK(info.st_mode)
 
 
-def ensure_dir(path, mode=OWNER_ONLY_DIR, uid=None):
+def ensure_dir(path, mode=OWNER_ONLY_DIR, uid=None, tighten=False):
     """Create *path* if needed and verify that it is a safe private directory.
 
-    A directory that exists with the wrong owner or with group or world
-    permissions is refused: the runtime does not repair it silently, because
-    repairing it could mean overwriting somebody else's file.
+    A directory that exists with the wrong owner is always refused: the
+    runtime does not repair that silently, because repairing it could mean
+    overwriting somebody else's directory.
+
+    A directory that exists with the right owner but with group or world
+    permissions is refused as well, unless ``tighten`` is set. ``init`` uses
+    ``tighten``, because establishing the state is exactly its job; the
+    runtime commands do not, because a directory that lost its permissions
+    after the setup is a sign that something is wrong.
+
+    A symbolic link is never followed and never accepted.
     """
     uid = os.getuid() if uid is None else uid
     info = _stat(path)
@@ -74,10 +82,16 @@ def ensure_dir(path, mode=OWNER_ONLY_DIR, uid=None):
             "%s is owned by uid %d, expected %d" % (path, info.st_uid, uid)
         )
     if info.st_mode & 0o077:
-        raise InvalidStateError(
-            "%s is accessible to other users (mode %o); refusing to use it"
-            % (path, stat.S_IMODE(info.st_mode))
-        )
+        if tighten:
+            # The directory belongs to the runtime user, so the runtime may
+            # restore the permissions it is supposed to have.
+            os.chmod(path, mode)
+            info = _stat(path)
+        else:
+            raise InvalidStateError(
+                "%s is accessible to other users (mode %o); refusing to use it"
+                % (path, stat.S_IMODE(info.st_mode))
+            )
     return path
 
 
@@ -226,25 +240,36 @@ class Layout:
 
     # --- helpers ------------------------------------------------------------
     def initialize(self):
-        """Create the persistent directory tree. Idempotent."""
-        ensure_dir(self.persist_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.chrome_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.keyring_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.log_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.backup_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.keys_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.runtime_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.xdg_runtime_dir, OWNER_ONLY_DIR)
-        ensure_dir(self.xdg_data_home, OWNER_ONLY_DIR)
+        """Create the persistent directory tree. Idempotent.
+
+        This is the one place where the permissions of an existing
+        directory may be restored: establishing the state is exactly what
+        ``init`` is for. Every other command refuses a directory that does
+        not have the right permissions.
+        """
+        ensure_dir(self.persist_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.chrome_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.keyring_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.log_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.backup_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.keys_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.runtime_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.xdg_runtime_dir, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.xdg_data_home, OWNER_ONLY_DIR, tighten=True)
         return self
 
     def require_initialized(self):
-        """Fail with a clear message when the state does not exist yet."""
+        """Fail with a clear message when the state does not exist yet.
+
+        The permissions are checked too: a state directory that became
+        accessible to other users is not trusted.
+        """
         info = _stat(self.persist_dir)
         if info is None or not stat.S_ISDIR(info.st_mode):
             raise NotInitializedError(
                 "%s does not exist; run 'cloudchrome init' first" % self.persist_dir
             )
+        ensure_dir(self.persist_dir, OWNER_ONLY_DIR)
         return self
 
     def validate_for_start(self):

@@ -202,10 +202,14 @@ from cloudchrome.errors import IntegrityError
 
 config = load_config()
 layout = Layout(config)
-# Point the identity at the wrong key.
-layout.identity_file = os.environ["CLOUDCHROME_IDENTITY_OVERRIDE"]
 try:
-    backup.restore_backup(layout, config, source=None, assume_yes=True)
+    backup.restore_backup(
+        layout,
+        config,
+        source=None,
+        assume_yes=True,
+        identity=os.environ["CLOUDCHROME_IDENTITY_OVERRIDE"],
+    )
     print("RESULT=accepted")
 except IntegrityError as exc:
     print("RESULT=refused")
@@ -336,25 +340,56 @@ done < "$WORK/hostile.txt"
 section "6. A failed restore rolls back"
 # ---------------------------------------------------------------------------
 python3 - <<'PY' > "$WORK/rollback.txt" 2>&1
-import os, sys, tempfile, shutil
+import io, os, subprocess, sys, shutil, tarfile
 sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
 from cloudchrome import backup
 from cloudchrome.config import load_config
 from cloudchrome.paths import Layout
-from cloudchrome.errors import IntegrityError
+from cloudrome.errors import IntegrityError
 
 config = load_config()
 layout = Layout(config)
 
-# Mark the installed keyring passphrase with a sentinel, so the rollback can
-# be observed.
+# The current keyring passphrase is marked with a sentinel, so the rollback
+# can be observed.
 sentinel = b"ROLLBACK-SENTINEL"
 with open(layout.keyring_pass_file, "wb") as handle:
     handle.write(sentinel)
 
+# The newest backup is tampered with, so the member no longer matches the
+# digest in its manifest and the restore must be refused.
+backups = backup._managed_backups(layout)
+if not backups:
+    print("RESULT=no-backup")
+    raise SystemExit(0)
+
+work = "/tmp/cloudchrome-rollback-test"
+shutil.rmtree(work, ignore_errors=True)
+os.makedirs(work, mode=0o700)
+plaintext = os.path.join(work, "plain.tar.gz")
+corrupted = os.path.join(work, "corrupt.tar.gz")
+subprocess.run(
+    ["age", "--decrypt", "--identity", layout.identity_file, backups[0]],
+    stdout=open(plaintext, "wb"),
+    stderr=subprocess.DEVNULL,
+    check=False,
+)
+with tarfile.open(plaintext, "r:gz") as handle, tarfile.open(corrupted, "w:gz") as out:
+    for member in handle.getmembers():
+        data = handle.extractfile(member).read() if member.isfile() else b""
+        if member.isfile() and member.name == "keyring.pass":
+            data = b"tampered"
+        info = tarfile.TarInfo(name=member.name)
+        info.size = len(data)
+        info.mode = 0o600
+        out.addfile(info, io.BytesIO(data))
+
 try:
-    backup.restore_backup(layout, config, source=None, assume_yes=True)
+    backup.restore_backup(layout, config, source=corrupted, assume_yes=True)
     print("RESULT=accepted")
+except IntegrityError as exc:
+    print("RESULT=refused")
+    print("REASON=%s" % exc)
 except Exception as exc:
     print("RESULT=refused")
     print("REASON=%s" % exc)
@@ -362,6 +397,7 @@ except Exception as exc:
 # The sentinel must still be there: the restore never reached the state.
 with open(layout.keyring_pass_file, "rb") as handle:
     print("PRESERVED=%s" % (handle.read() == sentinel))
+shutil.rmtree(work, ignore_errors=True)
 PY
 
 if grep -q "RESULT=refused" "$WORK/rollback.txt"; then

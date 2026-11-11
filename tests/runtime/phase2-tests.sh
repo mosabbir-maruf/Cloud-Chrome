@@ -265,19 +265,19 @@ grep -q "wrong_store_refused=yes" "$WORK/chrome-policy.txt" \
     && pass "a plaintext password store is refused" \
     || fail "a plaintext password store is refused"
 
-grep -q "has_libsecret=yes" "$WORK/chrome-policy.txt" \
+grep -q "has_libsecret=True" "$WORK/chrome-policy.txt" \
     && pass "Chrome uses the libsecret password store" \
     || fail "Chrome uses the libsecret password store"
 
-grep -q "has_no_sandbox=no" "$WORK/chrome-policy.txt" \
+grep -q "has_no_sandbox=False" "$WORK/chrome-policy.txt" \
     && pass "the Chrome vector has no --no-sandbox" \
     || fail "the Chrome vector has no --no-sandbox"
 
-grep -q "has_remote_debugging=no" "$WORK/chrome-policy.txt" \
+grep -q "has_remote_debugging=False" "$WORK/chrome-policy.txt" \
     && pass "the Chrome vector has no remote-debugging flag" \
     || fail "the Chrome vector has no remote-debugging flag"
 
-grep -q "has_user_data_dir=yes" "$WORK/chrome-policy.txt" \
+grep -q "has_user_data_dir=True" "$WORK/chrome-policy.txt" \
     && pass "the Chrome vector uses the persistent profile" \
     || fail "the Chrome vector uses the persistent profile"
 

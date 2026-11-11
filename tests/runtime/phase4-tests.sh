@@ -119,16 +119,27 @@ else
 fi
 
 # The runtime must refuse a state directory with the wrong mode rather than
-# repairing it.
+# repairing it. 'init' is the exception: establishing the state is its job,
+# so it restores the permissions of a directory it owns.
 chmod 0755 "$state"
-"$CLI" init > "$WORK/init-loose.txt" 2>&1
+"$CLI" start > "$WORK/start-loose.txt" 2>&1
 rc=$?
 if [ "$rc" -ne 0 ]; then
-    pass "init refuses a state directory with a loose mode" "exit $rc"
+    pass "start refuses a state directory with a loose mode" "exit $rc"
 else
-    fail "init refuses a state directory with a loose mode" "exit 0"
+    fail "start refuses a state directory with a loose mode" "exit 0"
 fi
-chmod 0700 "$state"
+grep -q "accessible to other users" "$WORK/start-loose.txt" \
+    && pass "the refusal explains why the directory is refused" \
+    || fail "the refusal explains why the directory is refused"
+
+"$CLI" init > /dev/null 2>&1
+mode=$(stat -c '%a' "$state")
+if [ "$mode" = "700" ]; then
+    pass "init restores the permissions of the state directory" "mode=$mode"
+else
+    fail "init restores the permissions of the state directory" "mode=$mode"
+fi
 
 # ---------------------------------------------------------------------------
 section "2. The lock behaviour under concurrency"

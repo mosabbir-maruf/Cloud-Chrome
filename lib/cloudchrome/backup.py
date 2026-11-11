@@ -253,19 +253,23 @@ def create_backup(layout, config, output=None, label=None):
 # ---------------------------------------------------------------------------
 # restoring a backup
 # ---------------------------------------------------------------------------
-def _decrypt_to_file(source, layout):
+def _decrypt_to_file(source, layout, identity=None):
     """Decrypt the archive into a private temporary file.
 
     The plaintext never leaves the private temporary directory, and it is
     overwritten and removed as soon as the restore is done.
+
+    ``identity`` overrides the age identity that is used, which is how a
+    restore with the wrong key is measured.
     """
+    identity = identity or layout.identity_file
     work = tempfile.mkdtemp(prefix=".cloudchrome-restore.", dir=layout.backup_dir)
     os.chmod(work, OWNER_ONLY_DIR)
     target = os.path.join(work, "backup.tar.gz")
     try:
         with open(target, "wb") as handle:
             result = subprocess.run(
-                ["age", "--decrypt", "--identity", layout.identity_file, source],
+                ["age", "--decrypt", "--identity", identity, source],
                 stdout=handle,
                 stderr=subprocess.PIPE,
                 timeout=1800,
@@ -336,12 +340,15 @@ def _stage_backup(plaintext, staging):
     return built, approved
 
 
-def restore_backup(layout, config, source=None, assume_yes=False):
+def restore_backup(layout, config, source=None, assume_yes=False, identity=None):
     """Restore an encrypted backup, transactionally.
 
     The current state is moved aside and put back if anything fails. A
     failed restore never leaves a partly replaced profile and never loses the
     previous keyring.
+
+    ``identity`` overrides the age identity, which is how a restore with the
+    wrong key is measured.
     """
     layout.require_initialized()
 
@@ -360,7 +367,7 @@ def restore_backup(layout, config, source=None, assume_yes=False):
     staging = None
     rollback = None
     try:
-        work, plaintext = _decrypt_to_file(source, layout)
+        work, plaintext = _decrypt_to_file(source, layout, identity=identity)
         staging = tempfile.mkdtemp(prefix=".cloudchrome-stage.", dir=layout.backup_dir)
         os.chmod(staging, OWNER_ONLY_DIR)
         built, _approved = _stage_backup(plaintext, staging)
