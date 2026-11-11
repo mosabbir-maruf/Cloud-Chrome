@@ -194,6 +194,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "4b. The diagnostics"
+# ---------------------------------------------------------------------------
+"$CLI" doctor > "$WORK/doctor.txt" 2>&1
+doctor_rc=$?
+sed -n '1,40p' "$WORK/doctor.txt" | sed 's/^/      /'
+if [ "$doctor_rc" -eq 0 ]; then
+    pass "the diagnostics pass"
+else
+    fail "the diagnostics pass" "$(grep -E '^FAIL' "$WORK/doctor.txt" | head -3 | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
 section "5. The stack goes down in order"
 # ---------------------------------------------------------------------------
 "$CLI" stop > "$WORK/stop.txt" 2>&1
