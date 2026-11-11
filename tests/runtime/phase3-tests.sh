@@ -78,9 +78,14 @@ fi
 section "2. The backup is encrypted and complete"
 # ---------------------------------------------------------------------------
 # Put something in the profile so that the backup has something to carry.
+#
+# The marker is a file Chrome does not manage. The restore starts the
+# desktop again, and Chrome rewrites the files it owns, so the content of
+# such a file cannot be the measure of a restore.
 mkdir -p "$state/chrome/Default"
 printf 'session-cookie-value' > "$state/chrome/Default/Cookies"
 printf 'history' > "$state/chrome/Default/History"
+printf 'the-marker' > "$state/chrome/Default/CloudChromeMarker"
 mkdir -p "$state/keyring"
 printf 'keyring-data' > "$state/keyring/login.keyring"
 
@@ -154,11 +159,7 @@ fi
 section "3. The restore replaces the state"
 # ---------------------------------------------------------------------------
 # Change the state so that the restore has something to undo.
-#
-# The marker is a file Chrome does not manage. The restore starts the
-# desktop again, and Chrome rewrites the files it owns, so the content of
-# such a file cannot be the measure of a restore.
-printf 'the-marker' > "$state/chrome/Default/CloudChromeMarker"
+printf 'changed-after-backup' > "$state/chrome/Default/CloudChromeMarker"
 printf 'new-file' > "$state/chrome/Default/Extra"
 
 "$CLI" restore --source "$backup_file" --yes > "$WORK/restore.txt" 2>&1

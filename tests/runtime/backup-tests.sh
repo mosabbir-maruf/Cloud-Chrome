@@ -63,6 +63,7 @@ printf 'a-session-cookie' > "$state/chrome/Default/Cookies"
 # desktop again, and Chrome rewrites the files it owns.
 printf 'the-original-marker' > "$state/chrome/Default/CloudChromeMarker"
 
+
 # ---------------------------------------------------------------------------
 section "2. A backup with the stack stopped"
 # ---------------------------------------------------------------------------
