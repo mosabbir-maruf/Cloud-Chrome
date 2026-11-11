@@ -51,7 +51,7 @@ repository issues #1–#9; the final Phase 1.1 run is issue #9.
 | The age private key is never in a backup | The identity lives outside the archived paths, with mode 0600 | `lib/cloudchrome/backup.py` |
 | The VNC password is never in a backup | It is excluded from the payload explicitly | `lib/cloudchrome/backup.py` |
 | Every archive is treated as untrusted | Every member is validated before anything is extracted | `lib/cloudchrome/archive.py` |
-| The restore is transactional | The previous state is put back when any step fails | `lib/cloudchrome/backup.py` |
+| The restore is transactional | The whole restore is one transaction; the previous state is put back when any step fails, and a failed restart is reported | `lib/cloudchrome/backup.py` |
 | The pruning never leaves the last backup | The newest backup is always protected | `lib/cloudchrome/backup.py` |
 
 ### Changing the isolation policy
@@ -466,15 +466,37 @@ follows a symbolic link, so a link in the archive cannot be used to write
 outside the staging directory. The ownership and the permissions of the
 archive are never trusted.
 
-The temporary plaintext archive is overwritten and removed as soon as the
-restore is done, and it never leaves a private mode-0700 directory.
+The archive is read back through a pipe, so the plaintext never lands on
+the filesystem at all. The fallback path, which writes it into a private
+mode-0700 directory first, removes it on every way out of the restore, and
+overwrites it before the unlink.
 
-### 7.4 The restore is transactional
+That is **not** a secure-erasure guarantee. On storage with copy-on-write,
+wear levelling or snapshots the old content can survive in the free blocks.
+What is guaranteed is that the plaintext is not left in a file, in a
+directory another user can read, or in the backup directory.
 
-The current profile and keyring are moved aside, the staged state is
-installed, and any failure puts the old state back. A failed restore never
-leaves a partly replaced profile and never loses the previous keyring, and
-the exact failure is reported.
+The archive is also bounded: its own size, the total size it expands to, the
+size of its largest member, its number of members and the size of its
+manifest are all limited, and the limits cannot be raised beyond a hard
+ceiling. The limits are listed in `docs/BACKUP.md`.
+
+### 7.4 The restore is one transaction
+
+The whole restore is one operation under one lock: the archive is validated
+and staged, the stack is stopped, the state is replaced, the restored
+desktop is started, and the restored Chrome and the Secret Service are
+checked. Only then is the restore finalised and the rollback state disposed
+of.
+
+Any failure puts the previous profile, keyring and passphrase back, starts
+the previous desktop again, and exits non-zero. A failed restore never
+reports success and never leaves a partly installed state. When the previous
+desktop cannot be started either, the rollback state is kept and the message
+says where it is, so the previous data stays recoverable.
+
+A backup is taken with the stack stopped, because a profile that Chrome is
+still writing to is not a consistent snapshot.
 
 ### 7.5 The pruning stays inside the managed area
 

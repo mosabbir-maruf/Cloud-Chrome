@@ -40,8 +40,24 @@ cloudchrome backup --label "before the upgrade"
 cloudchrome backup --output /tmp/my-backup.tar.gz.age
 ```
 
+The output directory must already exist. It is never created and never
+changed, so a shared directory such as `/tmp` keeps its own mode; the backup
+file itself is written with mode 0600. The archive is written to a unique
+temporary file in the same directory and moved into place, so the target is
+never a partly written file and an existing backup is replaced atomically. A
+target that is a symbolic link is refused, so the runtime cannot be made to
+write through a link to somewhere else.
+
 The command prints the path, the number of members and the SHA-256 digest of
 the resulting file.
+
+**The desktop stack is stopped for the snapshot and started again
+afterwards.** A profile that Chrome is still writing to is not a consistent
+snapshot: Chrome updates SQLite databases, their journals and LevelDB files
+while it runs, so hashing the files and streaming them afterwards can record
+a digest of content that is no longer there. Stopping the stack first makes
+the profile a consistent snapshot. A failure of the restart is never
+swallowed: the command reports it and exits non-zero.
 
 The archive is written as a tar stream that is piped straight into `age`, so
 **no plaintext archive is ever written to disk**.
@@ -58,17 +74,27 @@ cloudchrome restore --source .cloudchrome/backups/cloudchrome-backup-20260101T12
 cloudchrome restore --yes      # the newest backup, without the question
 ```
 
-The restore is **transactional**:
+The restore is **one transaction**, from the first byte of the archive to
+the health check of the restored desktop:
 
-1. the archive is decrypted into a private temporary directory;
-2. every member is validated, and the extracted files are checked against
-   the manifest;
-3. the desktop stack is stopped, so Chrome never writes to a profile that is
+1. the archive is streamed, every member is validated, and the extracted
+   files are checked against the manifest — nothing of the live state is
+   touched;
+2. the desktop stack is stopped, so Chrome never writes to a profile that is
    being replaced;
-4. the current profile and keyring are moved aside;
-5. the staged state is installed;
-6. the ownership and the permissions are verified;
-7. the desktop stack is started again.
+3. the current profile, keyring and passphrase are moved aside;
+4. the staged state is installed;
+5. the ownership and the permissions are verified;
+6. the restored desktop is started;
+7. the restored Chrome and the Secret Service are checked;
+8. only then is the restore finalised and the rollback state disposed of.
+
+If any step fails, the previous profile, keyring and passphrase are put back,
+the previous desktop is started again, and the command exits non-zero. A
+failed restore never reports success and never leaves a partly installed
+state. The rollback state is kept when the previous desktop cannot be
+started either, so that the previous data stays recoverable, and the
+message says where it is.
 
 If any step fails, the previous state is put back. A failed restore never
 leaves a partly replaced profile and never loses the previous keyring, and
@@ -123,6 +149,25 @@ The command shows what it is about to delete.
 
 ---
 
+## The limits
+
+An archive is untrusted input, so it is held to limits. They can be lowered
+through the configuration file or the environment, but never raised beyond
+the hard ceiling, so the protection cannot be configured away.
+
+| Limit | Default | What it bounds |
+|---|---|---|
+| `CLOUDCHROME_MAX_ARCHIVE_BYTES` | 2 GiB | the encrypted archive itself |
+| `CLOUDCHROME_MAX_TOTAL_BYTES` | 8 GiB | everything the archive expands to |
+| `CLOUDCHROME_MAX_MEMBER_BYTES` | 2 GiB | the largest single member |
+| `CLOUDCHROME_MAX_MEMBERS` | 200 000 | the number of members |
+| `CLOUDCHROME_MAX_MANIFEST_BYTES` | 32 MiB | the manifest itself |
+
+The archive is checked against the size limit before it is decrypted, and the
+member count, the member size and the total size are checked while it is
+read, so an archive that expands beyond the limits is refused before it can
+fill the disk.
+
 ## Security properties
 
 The archive is treated as untrusted input. Before anything is extracted,
@@ -142,8 +187,27 @@ The extraction writes every file with the runtime's own permissions and
 never follows a symbolic link, so a link in the archive cannot be used to
 write outside the staging directory.
 
-The temporary plaintext archive is overwritten and removed as soon as the
-restore is done, and it never leaves a private mode-0700 directory.
+## The temporary plaintext
+
+The restore reads the archive back through a pipe: the plaintext is streamed
+from `age --decrypt` into the reader and **never lands on the filesystem**.
+There is no plaintext archive file to clean up.
+
+The fallback path, which writes the plaintext into a private directory
+first, removes it on every way out of the restore: on success, on failure,
+on a timeout and on an interruption. The file is overwritten before it is
+unlinked.
+
+**What that does and does not guarantee.** Overwriting and unlinking removes
+the plaintext from the filesystem's view, inside the private directory it was
+written to. It is **not** a guarantee that the plaintext is gone from the
+device: on storage with copy-on-write, wear levelling or snapshots, the
+previous content can survive in the free blocks, and the operating system's
+own wear levelling can copy the old blocks before they are reused. Cloud-
+Chrome does not claim secure erasure, and it does not claim that the
+plaintext cannot be recovered from the raw device. The guarantee it makes is
+that the plaintext is not left in a file, in a directory another user can
+read, or in the backup directory.
 
 The encryption uses an age key pair, not a passphrase. No passphrase is ever
 placed in a command-line argument, an environment variable, a log or a shell

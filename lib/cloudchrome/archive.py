@@ -114,14 +114,21 @@ def validate_member(member):
     return name
 
 
-def validate_archive(archive):
+def validate_archive(archive, limits=None):
     """Validate every member of *archive* before anything is extracted.
 
     Returns the list of approved members, in the order they appear. Raises
     :class:`IntegrityError` on the first problem.
+
+    The limits are enforced while the archive is read, so an archive that
+    expands beyond them is refused before it can fill the disk.
     """
+    from .limits import Limits
+
+    limits = limits or Limits()
     seen = set()
     approved = []
+    total = 0
     try:
         with tarfile.open(archive, "r:*") as handle:
             for member in handle:
@@ -133,6 +140,22 @@ def validate_archive(archive):
                     )
                 seen.add(name)
                 approved.append(name)
+                total += member.size
+                if len(approved) > limits.max_members:
+                    raise IntegrityError(
+                        "the archive contains more than %d members; refused"
+                        % limits.max_members
+                    )
+                if member.size > limits.max_member_bytes:
+                    raise IntegrityError(
+                        "the archive member %s is larger than the limit of %d bytes; "
+                        "refused" % (name, limits.max_member_bytes)
+                    )
+                if total > limits.max_total_bytes:
+                    raise IntegrityError(
+                        "the archive expands to more than the limit of %d bytes; "
+                        "refused" % limits.max_total_bytes
+                    )
     except IntegrityError:
         raise
     except (tarfile.TarError, EOFError, OSError) as exc:

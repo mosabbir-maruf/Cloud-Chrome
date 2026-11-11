@@ -36,6 +36,14 @@ DEFAULTS = {
     "CLOUDCHROME_KEYRING_DIR": "keyring",
     "CLOUDCHROME_BACKUP_DIR": "backups",
     "CLOUDCHROME_LOG_DIR": "logs",
+    # The limits that an untrusted backup archive is held to. They may be
+    # lowered through the configuration, never raised beyond the hard
+    # ceiling in cloudchrome.limits.
+    "CLOUDCHROME_MAX_ARCHIVE_BYTES": "",
+    "CLOUDCHROME_MAX_TOTAL_BYTES": "",
+    "CLOUDCHROME_MAX_MEMBER_BYTES": "",
+    "CLOUDCHROME_MAX_MEMBERS": "",
+    "CLOUDCHROME_MAX_MANIFEST_BYTES": "",
 }
 
 # Keys that must be integers.

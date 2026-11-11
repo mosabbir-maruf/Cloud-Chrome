@@ -17,6 +17,7 @@ import time
 
 from . import backup as backup_module
 from . import chrome as chrome_policy
+from . import lifecycle as lifecycle_module
 from . import keyring as keyring_policy
 from . import logutil
 from . import procs
@@ -37,6 +38,7 @@ from .errors import (
     NotRunningError,
     UsageError,
 )
+from .limits import Limits
 from .locking import FileLock, is_locked
 from .paths import Layout, OWNER_ONLY_DIR, assert_safe_file, ensure_dir
 from .version import __version__
@@ -63,6 +65,15 @@ def _layout(config):
     return Layout(config)
 
 
+def _lifecycle(config, layout):
+    """The desktop stack lifecycle, for this invocation.
+
+    The lifecycle never takes the control lock: the caller owns it, so a
+    compound operation holds the lock exactly once.
+    """
+    return Lifecycle(config, layout)
+
+
 def _print(message=""):
     sys.stdout.write("%s\n" % message)
 
@@ -73,12 +84,7 @@ def _fail(message):
 
 def _supervisor_running(layout):
     """Return the supervisor's PID when it is running, else None."""
-    record = procs.read_pid_file(layout.supervisor_pid_file)
-    if record is None:
-        return None
-    if procs.pid_matches(record["pid"], record["start_time"]):
-        return record["pid"]
-    return None
+    return lifecycle_module.supervisor_pid(layout)
 
 
 def _read_state(layout):
@@ -129,107 +135,48 @@ def command_init(args, config):
 # ---------------------------------------------------------------------------
 # start / stop / restart
 # ---------------------------------------------------------------------------
-def _start_supervisor(config, layout, if_needed=False):
-    """Start the supervisor as a detached process and wait for it."""
-    running = _supervisor_running(layout)
-    if running is not None:
-        if if_needed:
-            _print("the desktop stack is already running (supervisor pid %d)" % running)
-            return EXIT_OK
-        raise CloudChromeError(
-            "the desktop stack is already running (supervisor pid %d); "
-            "use 'cloudchrome restart' to replace it" % running,
-            code=EXIT_BUSY,
-        )
-
-    env = dict(os.environ)
-    lib_path = _library_path()
-    env["PYTHONPATH"] = (
-        lib_path + os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else lib_path
-    )
-    env["CLOUDCHROME_HOME"] = os.path.dirname(os.path.abspath(lib_path))
-
-    log_path = os.path.join(layout.log_dir, "supervisor.log")
-    try:
-        os.makedirs(layout.log_dir, mode=OWNER_ONLY_DIR, exist_ok=True)
-        handle = open(log_path, "ab", buffering=0)
-    except OSError as exc:
-        raise CloudChromeError("cannot open %s: %s" % (log_path, exc))
-
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "cloudchrome.supervisor"],
-            stdin=subprocess.DEVNULL,
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
-    except (OSError, ValueError) as exc:
-        handle.close()
-        raise CloudChromeError("cannot start the supervisor: %s" % exc)
-
-    deadline = time.monotonic() + 120
-    while time.monotonic() < deadline:
-        state = _read_state(layout)
-        if state:
-            if state.get("state") == "running":
-                _print("the desktop stack is running")
-                return EXIT_OK
-            if state.get("state") == "failed":
-                raise CloudChromeError(
-                    "the desktop stack failed to start: %s" % state.get("error")
-                )
-        time.sleep(0.5)
-    raise CloudChromeError("the supervisor did not report a ready stack in time")
-
-
 def command_start(args, config):
+    """Start the desktop stack."""
     layout = _layout(config)
     layout.require_initialized()
     # The state is checked before anything is started, so a broken state is
     # reported straight away instead of after the stack is half up.
     layout.validate_for_start()
     with FileLock(layout.control_lock_file, timeout=30):
-        return _start_supervisor(config, layout, if_needed=args.if_needed)
+        _lifecycle(config, layout).start(if_needed=args.if_needed)
+    _print("the desktop stack is running")
+    return EXIT_OK
 
 
 def command_stop(args, config):
+    """Stop the desktop stack."""
     layout = _layout(config)
     layout.require_initialized()
     with FileLock(layout.control_lock_file, timeout=30):
-        pid = _supervisor_running(layout)
-        if pid is None:
-            _print("the desktop stack is not running")
-            return EXIT_OK
-        record = procs.read_pid_file(layout.supervisor_pid_file) or {}
-        logutil.append(
-            layout.supervisor_log,
-            "stop requested for supervisor pid %d" % pid,
-            max_bytes=config.log_max_bytes,
-            keep=config.log_keep,
-        )
-        procs.terminate(
-            pid, record.get("start_time"), timeout=max(config.stop_timeout, 1)
-        )
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            if _supervisor_running(layout) is None:
-                break
-            time.sleep(0.2)
-        procs.remove_pid_file(layout.supervisor_pid_file)
+        stopped = _lifecycle(config, layout).stop()
+    if stopped:
         _print("the desktop stack is stopped")
+    else:
+        _print("the desktop stack is not running")
     return EXIT_OK
 
 
 def command_restart(args, config):
+    """Stop the desktop stack and start it again.
+
+    The lock is taken once for the whole operation: taking it again inside
+    it would be a second, independent lock acquisition, which Linux
+    ``flock`` treats as a different owner and would fail.
+    """
     layout = _layout(config)
     layout.require_initialized()
     layout.validate_for_start()
-    command_stop(args, config)
     with FileLock(layout.control_lock_file, timeout=30):
-        return _start_supervisor(config, layout)
+        lifecycle = _lifecycle(config, layout)
+        lifecycle.stop()
+        lifecycle.start()
+    _print("the desktop stack is running")
+    return EXIT_OK
 
 # ---------------------------------------------------------------------------
 # status
@@ -519,26 +466,8 @@ def _any_listening_on(port):
 
 
 def _find_browser_process(layout):
-    """Find the Chrome browser process and its argument vector.
-
-    The browser is the process that carries the profile directory and no
-    ``--type=`` switch; the other Chrome processes are its children.
-    """
-    marker = "--user-data-dir=%s" % layout.chrome_dir
-    for entry in sorted(os.listdir("/proc")):
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
-        argv = procs.read_cmdline(pid)
-        if not argv:
-            continue
-        command_line = " ".join(argv)
-        if marker not in command_line:
-            continue
-        if "--type=" in command_line:
-            continue
-        return pid, argv
-    return None
+    """Find the Chrome browser process and its command line."""
+    return lifecycle_module.find_browser_process(layout)
 
 
 def _no_devtools_listener(port=9222):
@@ -725,13 +654,33 @@ def command_version(args, config):
 # backup / restore / prune
 # ---------------------------------------------------------------------------
 def command_backup(args, config):
-    """Write an encrypted backup."""
+    """Write an encrypted backup.
+
+    The desktop stack is stopped for the snapshot and started again
+    afterwards. A profile that Chrome is still writing to is not a consistent
+    snapshot, and hashing it does not make it one.
+
+    A failure of the restart is never swallowed: the command reports it and
+    exits non-zero, because a backup that was taken but a desktop that never
+    came back is not a clean outcome.
+    """
     layout = _layout(config)
     layout.require_initialized()
     with FileLock(layout.control_lock_file, timeout=60):
-        result = backup_module.create_backup(
-            layout, config, output=args.output, label=args.label
-        )
+        lifecycle = _lifecycle(config, layout)
+        was_running = lifecycle.is_running()
+        if was_running:
+            lifecycle.stop()
+        try:
+            result = backup_module.create_backup(
+                layout, config, output=args.output, label=args.label
+            )
+        except BaseException:
+            # The backup failed: the previous state is untouched, so the
+            # desktop that was running is simply started again.
+            _restart_or_report(lifecycle, was_running, "the backup failed")
+            raise
+        _restart_or_report(lifecycle, was_running, "the backup was written")
     _print("backup written: %s" % result["path"])
     _print("members:      %d" % result["members"])
     _print("sha-256:      %s" % result["sha256"])
@@ -739,40 +688,45 @@ def command_backup(args, config):
 
 
 def command_restore(args, config):
-    """Restore an encrypted backup, transactionally.
+    """Restore an encrypted backup, as one transaction.
 
-    The desktop stack is stopped before the state is replaced and started
-    again afterwards, so Chrome never writes to a profile that is being
-    replaced.
+    The whole restore is one operation under one lock: the archive is
+    validated and staged, the stack is stopped, the state is replaced, the
+    restored desktop is started and checked, and only then is the restore
+    reported as successful. A failure at any step puts the previous profile,
+    keyring and passphrase back and returns a failure.
     """
     layout = _layout(config)
     layout.require_initialized()
     with FileLock(layout.control_lock_file, timeout=60):
-        was_running = _supervisor_running(layout) is not None
-        if was_running:
-            command_stop(argparse.Namespace(), config)
-        try:
-            result = backup_module.restore_backup(
-                layout, config, source=args.source, assume_yes=args.yes
-            )
-        except CloudChromeError:
-            if was_running:
-                # The state is unchanged, so the stack is simply started again.
-                _restart_after_failure(config, layout)
-            raise
-        if was_running:
-            _restart_after_failure(config, layout)
+        result = backup_module.restore_transaction(
+            _lifecycle(config, layout),
+            layout,
+            config,
+            source=args.source,
+            assume_yes=args.yes,
+            limits=Limits(config.as_dict()),
+        )
     _print("restored from %s" % result["source"])
     _print("members:      %d" % result["members"])
     return EXIT_OK
 
 
-def _restart_after_failure(config, layout):
-    """Start the stack again after a restore."""
+def _restart_or_report(lifecycle, was_running, context):
+    """Start the desktop again and report a failure to start it.
+
+    The failure is never swallowed: the caller turns it into a non-zero exit
+    code.
+    """
+    if not was_running:
+        return
     try:
-        _start_supervisor(config, layout)
+        lifecycle.start()
     except CloudChromeError as exc:
-        _fail("the desktop stack could not be restarted: %s" % exc)
+        raise CloudChromeError(
+            "%s, but the desktop stack could not be started again: %s"
+            % (context, exc)
+        ) from exc
 
 
 def command_prune(args, config):

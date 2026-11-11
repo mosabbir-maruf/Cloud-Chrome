@@ -590,6 +590,18 @@ jobs:
             "$IMAGE_NAME" bash /repo/tests/runtime/phase3-tests.sh \
             | tee "$RUNNER_TEMP/phase3.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Run the backup and restore tests inside the image
+        run: |
+          set -euo pipefail
+          # The backup, the restore and the transaction, with and without a
+          # running desktop stack, and the failure paths of the restore.
+          docker run --rm -i \
+            -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-backup/.cloudchrome \
+            -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-backup/.cloudchrome/run \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/backup-tests.sh \
+            | tee "$RUNNER_TEMP/backup.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Run the persistence and keyring tests inside the image
         run: |
           set -euo pipefail
