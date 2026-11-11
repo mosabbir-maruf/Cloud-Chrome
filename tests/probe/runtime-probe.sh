@@ -484,6 +484,8 @@ PY
 # ---------------------------------------------------------------------------
 section "10. The backup and the restore"
 # ---------------------------------------------------------------------------
+# The backup stops the desktop for the snapshot and starts it again
+# afterwards, so it is taken with the desktop running.
 "$CLI" backup > "$WORK/backup.txt" 2>&1
 kv "backup exit" "$?"
 sed -n '1,6p' "$WORK/backup.txt"
@@ -498,6 +500,12 @@ if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
     members=$(age --decrypt --identity "$REPO_ROOT/.cloudchrome/keys/backup-identity.txt" \
         "$backup_file" 2>/dev/null | tar -tzf - 2>/dev/null | sort)
     printf '%s\n' "$members"
+    printf -- '\n--- the desktop is running again after the backup ---\n'
+    if bash "$CLI" status 2>/dev/null | grep -qE "^stack: *running"; then
+        echo "the desktop is running again after the backup: ok"
+    else
+        echo "the desktop is running again after the backup: FAIL"
+    fi
     printf -- '\n--- the VNC password is not in the backup ---\n'
     if printf '%s\n' "$members" | grep -q "vnc.pass"; then
         echo "the VNC password file IS in the backup: FAIL"
