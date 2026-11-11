@@ -22,6 +22,34 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY config/versions.env /tmp/cloudchrome-versions.env
 
 # ---------------------------------------------------------------------------
+# The Ubuntu archive fallback.
+#
+# archive.ubuntu.com is the official source and is always listed first. Some
+# build environments cannot resolve it at all, and the build then fails on a
+# network problem rather than on a code problem. A mirror of the same archive
+# is listed as well, so that apt can fetch the same signed metadata from a
+# host it can reach.
+#
+# The mirror serves the same Release files, signed by the same Ubuntu archive
+# key, and apt verifies that signature against the keyring that is already in
+# the base image. The fallback therefore does not weaken the package policy;
+# it only changes which host serves the same bytes.
+#
+# The mirror entry is removed again before the image is finished, so the
+# shipped image refers to the official archive only.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    printf 'deb http://mirror.aarnet.edu.au/ubuntu/ noble main universe\n' \
+        > /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    printf 'deb http://mirror.aarnet.edu.au/ubuntu/ noble-updates main universe\n' \
+        >> /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    printf 'deb http://mirror.aarnet.edu.au/ubuntu/ noble-security main universe\n' \
+        >> /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    printf 'deb http://mirror.aarnet.edu.au/ubuntu/ noble-backports main universe\n' \
+        >> /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    echo "the fallback mirror is configured"
+
+# ---------------------------------------------------------------------------
 # System packages.
 #
 # PINNED_* packages are installed with an exact version requirement: apt fails
@@ -72,7 +100,9 @@ RUN set -eux; \
         sleep 15; \
     done; \
     apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
+    rm -f /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    rm -rf /var/lib/apt/lists/*; \
+    echo "the fallback mirror is removed; the image refers to the official archive"
 
 # ---------------------------------------------------------------------------
 # Google Chrome Stable.
@@ -83,20 +113,31 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     . /tmp/cloudchrome-versions.env; \
+    # Chrome's own runtime dependencies come from the archive, so the \
+    # fallback mirror is configured for this step as well. \
+    printf 'deb http://mirror.aarnet.edu.au/ubuntu/ noble main universe\n' \
+        > /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    printf 'deb http://mirror.aarnet.edu.au/ubuntu/ noble-updates main universe\n' \
+        >> /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    printf 'deb http://mirror.aarnet.edu.au/ubuntu/ noble-security main universe\n' \
+        >> /etc/apt/sources.list.d/cloudchrome-mirror.list; \
+    mkdir -p /tmp/dl; \
+    curl -fsSL --retry 3 -o /tmp/dl/chrome.deb "${CHROME_DEB_URL}"; \
+    echo "${CHROME_DEB_SHA256}  /tmp/dl/chrome.deb" | sha256sum -c -; \
     for attempt in 1 2 3 4 5; do \
-        if apt-get update; then break; fi; \
+        if apt-get update \
+            && apt-get install -y --no-install-recommends /tmp/dl/chrome.deb; then \
+            break; \
+        fi; \
         if [ "$attempt" -eq 5 ]; then \
             echo "the Ubuntu archive could not be reached after five attempts" >&2; \
             exit 1; \
         fi; \
         echo "the archive could not be reached; retrying" >&2; \
-        sleep 10; \
+        sleep 15; \
     done; \
-    mkdir -p /tmp/dl; \
-    curl -fsSL --retry 3 -o /tmp/dl/chrome.deb "${CHROME_DEB_URL}"; \
-    echo "${CHROME_DEB_SHA256}  /tmp/dl/chrome.deb" | sha256sum -c -; \
-    apt-get install -y --no-install-recommends /tmp/dl/chrome.deb; \
     apt-get clean; \
+    rm -f /etc/apt/sources.list.d/cloudchrome-mirror.list; \
     rm -rf /var/lib/apt/lists/* /tmp/dl
 
 # ---------------------------------------------------------------------------
