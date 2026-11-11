@@ -112,7 +112,12 @@ def verify_secret_service(env, timeout=25):
     import time
 
     probe = base64.b32encode(_os.urandom(16)).decode("ascii").rstrip("=").lower()
-    attribute = "/cloudchrome/secret-service-probe"
+
+    # secret-tool identifies an item by attribute/value PAIRS. The secret
+    # itself is read from standard input, so it never appears in the process
+    # table, and it carries no trailing newline, because a newline would
+    # become part of the stored value.
+    pairs = ["application", "cloudchrome"]
 
     def run(args, stdin=None):
         return subprocess.run(
@@ -130,7 +135,7 @@ def verify_secret_service(env, timeout=25):
     last_error = ""
     while True:
         store = run(
-            ["secret-tool", "store", "--label=Cloud-Chrome probe", attribute],
+            ["secret-tool", "store", "--label=Cloud-Chrome probe"] + pairs,
             stdin=probe,
         )
         if store.returncode == 0:
@@ -144,7 +149,7 @@ def verify_secret_service(env, timeout=25):
             )
         time.sleep(0.5)
 
-    lookup = run(["secret-tool", "lookup", attribute])
+    lookup = run(["secret-tool", "lookup"] + pairs)
     if lookup.returncode != 0:
         raise UnsupportedError(
             "the secret service did not return the stored secret (secret-tool exited %d)"
@@ -156,11 +161,11 @@ def verify_secret_service(env, timeout=25):
             "the secret service returned a different value than the one stored"
         )
 
-    run(["secret-tool", "clear", attribute])
+    run(["secret-tool", "clear"] + pairs)
 
     return {
         "stored": True,
         "retrieved": True,
         "matched": True,
-        "attribute": attribute,
+        "pairs": pairs,
     }
