@@ -479,6 +479,18 @@ jobs:
           gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
           docker image inspect "$IMAGE_NAME" --format '{{.Size}}'
 
+      - name: Run the keyring test inside the image
+        run: |
+          set -euo pipefail
+          # The keyring is measured on its own, because it is the component
+          # that fails in the most obscure ways.
+          docker run --rm -i \
+            -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-keyring/.cloudchrome \
+            -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-keyring/.cloudchrome/run \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/keyring-tests.sh \
+            | tee "$RUNNER_TEMP/keyring.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Run the desktop stack test inside the image
         run: |
           set -euo pipefail
