@@ -479,6 +479,20 @@ jobs:
           gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
           docker image inspect "$IMAGE_NAME" --format '{{.Size}}'
 
+      - name: Run the desktop stack test inside the image
+        run: |
+          set -euo pipefail
+          # The complete desktop stack: the X/VNC server, the D-Bus bus, the
+          # keyring, the XFCE session, the noVNC bridge and Chrome. It comes
+          # up, stays up, goes down in order and comes up again.
+          docker run --rm -i \
+            --security-opt "seccomp=$PWD/.devcontainer/seccomp/chrome.json" \
+            -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-stack/.cloudchrome \
+            -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-stack/.cloudchrome/run \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/stack-tests.sh \
+            | tee "$RUNNER_TEMP/stack.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Run the runtime test suite inside the image
         run: |
           set -euo pipefail

@@ -131,7 +131,7 @@ def assert_no_devtools_listener(desired_port=None):
     return True
 
 
-def chrome_environment(display, dbus_address, keyring_control, persist_dir):
+def chrome_environment(display, dbus_address, keyring_control, layout):
     """The environment Chrome is started with.
 
     Chrome must see the session bus and the keyring control socket, otherwise
@@ -144,10 +144,10 @@ def chrome_environment(display, dbus_address, keyring_control, persist_dir):
         env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
     if keyring_control:
         env["GNOME_KEYRING_CONTROL"] = keyring_control
-    env["XDG_RUNTIME_DIR"] = os.path.join(persist_dir, "run", "xdg")
-    env["XDG_DATA_HOME"] = os.path.join(persist_dir, "xdg")
-    env["XDG_CACHE_HOME"] = os.path.join(persist_dir, "cache")
-    env["XDG_CONFIG_HOME"] = os.path.join(persist_dir, "config")
+    env["XDG_RUNTIME_DIR"] = layout.xdg_runtime_dir
+    env["XDG_DATA_HOME"] = layout.xdg_data_home
+    env["XDG_CACHE_HOME"] = layout.xdg_cache_home
+    env["XDG_CONFIG_HOME"] = layout.xdg_config_home
     env["XDG_CONFIG_DIRS"] = "/etc/xdg"
     # A container has no usable GPU; software rendering is the default and
     # nothing is switched off to make Chrome start.

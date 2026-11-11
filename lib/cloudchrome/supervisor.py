@@ -333,7 +333,7 @@ class Supervisor:
 
     def start_desktop(self):
         env = desktop_policy.desktop_environment(
-            self.config.display, self._dbus_address, self.layout.persist_dir
+            self.config.display, self._dbus_address, self.layout
         )
         self.spawn(
             "desktop",
@@ -378,7 +378,7 @@ class Supervisor:
             self.config.display,
             self._dbus_address,
             self._keyring_control,
-            self.layout.persist_dir,
+            self.layout,
         )
         self.spawn(
             "chrome",

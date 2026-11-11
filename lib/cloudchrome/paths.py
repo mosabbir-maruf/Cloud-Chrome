@@ -231,6 +231,14 @@ class Layout:
         return os.path.join(self.persist_dir, "xdg")
 
     @property
+    def xdg_cache_home(self):
+        return os.path.join(self.persist_dir, "cache")
+
+    @property
+    def xdg_config_home(self):
+        return os.path.join(self.persist_dir, "config")
+
+    @property
     def keyring_store_dir(self):
         """Where the GNOME Keyring keeps its keyring files."""
         return os.path.join(self.xdg_data_home, "keyrings")
@@ -261,6 +269,8 @@ class Layout:
         ensure_dir(self.runtime_dir, OWNER_ONLY_DIR, tighten=True)
         ensure_dir(self.xdg_runtime_dir, OWNER_ONLY_DIR, tighten=True)
         ensure_dir(self.xdg_data_home, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.xdg_cache_home, OWNER_ONLY_DIR, tighten=True)
+        ensure_dir(self.xdg_config_home, OWNER_ONLY_DIR, tighten=True)
         ensure_dir(self.keyring_store_dir, OWNER_ONLY_DIR, tighten=True)
         return self
 

@@ -406,9 +406,11 @@ def command_doctor(args, config):
         not _any_listening_on(22),
         "port 22",
     )
+    unexpected = _unexpected_listeners(config)
     check(
-        "no other unexpected listener is open",
-        not _unexpected_listeners(config),
+        "no Cloud-Chrome component listens on an unexpected port",
+        not unexpected,
+        "; ".join("%s: %s" % (port, owner) for port, owner in unexpected[:3]),
     )
 
     if pid is not None:
@@ -423,20 +425,36 @@ def command_doctor(args, config):
             "Chrome is running",
             bool(components.get("chrome", {}).get("running")),
         )
-        chrome_pid = components.get("chrome", {}).get("pid")
-        if chrome_pid:
-            argv = procs.read_cmdline(chrome_pid)
+        # The browser process is looked up through the process table rather
+        # than through the supervisor's record, because Chrome re-executes
+        # itself and the recorded PID is not always the browser.
+        browser = _find_browser_process(layout)
+        if browser is not None:
+            browser_pid, browser_argv = browser
             forbidden = [
                 argument
-                for argument in argv
+                for argument in browser_argv
                 if argument.split("=", 1)[0] in chrome_policy.FORBIDDEN_FLAGS
             ]
             check("Chrome runs without forbidden flags", not forbidden, ",".join(forbidden))
             check(
                 "Chrome uses the libsecret password store",
-                any(argument.startswith("--password-store=gnome-libsecret") for argument in argv),
+                any(
+                    argument.startswith("--password-store=gnome-libsecret")
+                    for argument in browser_argv
+                ),
+                " ".join(browser_argv[:4]),
+            )
+            check(
+                "Chrome uses the persistent profile",
+                any(
+                    argument.startswith("--user-data-dir=%s" % layout.chrome_dir)
+                    for argument in browser_argv
+                ),
             )
             check("Chrome has no DevTools listener", _no_devtools_listener())
+        else:
+            check("the Chrome browser process was found", False)
 
     # --- the logs -----------------------------------------------------------
     # The logs must never carry a secret.
@@ -498,6 +516,32 @@ def command_doctor(args, config):
     return EXIT_OK
 
 
+def _any_listening_on(port):
+    return port in _listening_ports()
+
+
+def _find_browser_process(layout):
+    """Find the Chrome browser process and its argument vector.
+
+    The browser is the process that carries the profile directory and no
+    ``--type=`` switch; the other Chrome processes are its children.
+    """
+    marker = "--user-data-dir=%s" % layout.chrome_dir
+    for entry in sorted(os.listdir("/proc")):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        argv = procs.read_cmdline(pid)
+        if not argv:
+            continue
+        if marker not in " ".join(argv):
+            continue
+        if any(argument.startswith("--type=") for argument in argv):
+            continue
+        return pid, argv
+    return None
+
+
 def _no_devtools_listener(port=9222):
     import socket
 
@@ -529,17 +573,92 @@ def _listening_ports():
     return ports
 
 
-def _any_listening_on(port):
-    return port in _listening_ports()
+def _listening_inodes():
+    """Return the socket inodes of the listening sockets."""
+    inodes = {}
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != "0A":
+                continue
+            try:
+                port = int(fields[1].rpartition(":")[2], 16)
+            except ValueError:
+                continue
+            inodes[fields[9]] = port
+    return inodes
+
+
+def _processes_owning_port(port):
+    """Return the command lines of the processes that listen on *port*.
+
+    The platform's own agents listen on ports too; only the processes that
+    belong to Cloud-Chrome are of interest here.
+    """
+    inodes = {
+        inode: number
+        for inode, number in _listening_inodes().items()
+        if number == port
+    }
+    owners = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        directory = "/proc/%s/fd" % entry
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            try:
+                target = os.readlink(os.path.join(directory, name))
+            except OSError:
+                continue
+            if not target.startswith("socket:["):
+                continue
+            inode = target[8:-1]
+            if inode in inodes:
+                owners.append(" ".join(procs.read_cmdline(int(entry))))
+                break
+    return owners
 
 
 def _unexpected_listeners(config):
-    """True when a port is listening that Cloud-Chrome does not own.
+    """True when a Cloud-Chrome component listens on an unexpected port.
 
-    The noVNC port and the RFB port are the only ones the runtime opens.
+    The platform's own agents listen on ports of their own; those are not
+    Cloud-Chrome's business. Only the processes that Cloud-Chrome started
+    are checked.
     """
     allowed = {config.http_port, config.vnc_port}
-    return sorted(_listening_ports() - allowed)
+    unexpected = []
+    for port in sorted(_listening_ports()):
+        if port in allowed:
+            continue
+        for owner in _processes_owning_port(port):
+            if _is_cloudchrome_process(owner):
+                unexpected.append((port, owner))
+    return unexpected
+
+
+def _is_cloudchrome_process(command_line):
+    """True when the command line belongs to a Cloud-Chrome component."""
+    markers = (
+        "Xtigervnc",
+        "websockify",
+        "xfce4-session",
+        "xfwm4",
+        "gnome-keyring-daemon",
+        "dbus-daemon",
+        "google-chrome",
+        "cloudchrome",
+    )
+    return any(marker in command_line for marker in markers)
 
 
 # ---------------------------------------------------------------------------

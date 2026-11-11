@@ -30,16 +30,16 @@ def window_manager_arguments(display):
     ]
 
 
-def desktop_environment(display, dbus_address, persist_dir):
+def desktop_environment(display, dbus_address, layout):
     """The environment of the desktop components."""
     env = dict(os.environ)
     env["DISPLAY"] = display
     if dbus_address:
         env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
-    env["XDG_RUNTIME_DIR"] = os.path.join(persist_dir, "run", "xdg")
-    env["XDG_DATA_HOME"] = os.path.join(persist_dir, "xdg")
-    env["XDG_CACHE_HOME"] = os.path.join(persist_dir, "cache")
-    env["XDG_CONFIG_HOME"] = os.path.join(persist_dir, "config")
+    env["XDG_RUNTIME_DIR"] = layout.xdg_runtime_dir
+    env["XDG_DATA_HOME"] = layout.xdg_data_home
+    env["XDG_CACHE_HOME"] = layout.xdg_cache_home
+    env["XDG_CONFIG_HOME"] = layout.xdg_config_home
     env["XDG_CONFIG_DIRS"] = "/etc/xdg"
     env["HOME"] = os.path.expanduser("~")
     env["USER"] = "vscode"

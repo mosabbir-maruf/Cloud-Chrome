@@ -469,11 +469,38 @@ print(Layout(load_config()).log_dir)")" 2>/dev/null; then
 else
     kv "the keyring passphrase in the logs" "absent: ok"
 fi
-if grep -rlF "$secret" /proc/*/cmdline 2>/dev/null | head -1 | grep -q .; then
-    kv "the keyring passphrase in the process table" "FOUND: FAIL"
-else
+# The passphrase must not be in the arguments of any process. The search
+# reads the passphrase from a file, so the search itself does not put it in
+# its own arguments, and it skips the processes of this probe.
+printf '%s' "$secret" > "$WORK/secret.txt"
+chmod 0600 "$WORK/secret.txt"
+if CLOUDCHROME_TEST_SECRET="$WORK/secret.txt" python3 - <<'PY'
+import os, sys
+
+secret = open(os.environ["CLOUDCHROME_TEST_SECRET"], "r", encoding="utf-8").read().strip()
+mine = {os.getpid(), os.getppid()}
+for entry in os.listdir("/proc"):
+    if not entry.isdigit():
+        continue
+    pid = int(entry)
+    if pid in mine:
+        continue
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        continue
+    if secret.encode("utf-8") in raw:
+        print("the passphrase is in the arguments of pid %d" % pid, file=sys.stderr)
+        sys.exit(1)
+sys.exit(0)
+PY
+then
     kv "the keyring passphrase in the process table" "absent: ok"
+else
+    kv "the keyring passphrase in the process table" "FOUND: FAIL"
 fi
+rm -f "$WORK/secret.txt"
 for command in status doctor logs version url; do
     "$CLI" "$command" > "$WORK/secret-$command.txt" 2>&1
     if grep -qF "$secret" "$WORK/secret-$command.txt" 2>/dev/null; then
