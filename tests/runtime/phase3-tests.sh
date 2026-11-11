@@ -155,7 +155,11 @@ fi
 section "3. The restore replaces the state"
 # ---------------------------------------------------------------------------
 # Change the state so that the restore has something to undo.
-printf 'changed-after-backup' > "$state/chrome/Default/History"
+#
+# The marker is a file Chrome does not manage. The restore starts the
+# desktop again, and Chrome rewrites the files it owns, so the content of
+# such a file cannot be the measure of a restore.
+printf 'the-marker' > "$state/chrome/Default/CloudChromeMarker"
 printf 'new-file' > "$state/chrome/Default/Extra"
 
 "$CLI" restore --source "$backup_file" --yes > "$WORK/restore.txt" 2>&1
@@ -174,11 +178,18 @@ else
     fail "restore succeeds" "exit $rc: $(head -2 "$WORK/restore.txt")"
 fi
 
-content=$(cat "$state/chrome/Default/History" 2>/dev/null)
-if [ "$content" = "history" ]; then
+content=$(cat "$state/chrome/Default/CloudChromeMarker" 2>/dev/null)
+if [ "$content" = "the-marker" ]; then
     pass "the restored profile holds the backed-up content"
 else
     fail "the restored profile holds the backed-up content" "$content"
+fi
+
+# The restore starts the restored desktop, so it is running and usable.
+if bash "$CLI" status 2>/dev/null | grep -q "^stack: *running"; then
+    pass "the restored desktop is running"
+else
+    fail "the restored desktop is running" "$(bash "$CLI" status 2>/dev/null | grep '^stack:')"
 fi
 
 if [ -f "$state/chrome/Default/Extra" ]; then
@@ -235,8 +246,8 @@ else
 fi
 
 # The state must be untouched after the refused restore.
-content=$(cat "$state/chrome/Default/History" 2>/dev/null)
-if [ "$content" = "history" ]; then
+content=$(cat "$state/chrome/Default/CloudChromeMarker" 2>/dev/null)
+if [ "$content" = "the-marker" ]; then
     pass "the state is unchanged after the refused restore"
 else
     fail "the state is unchanged after the refused restore" "$content"

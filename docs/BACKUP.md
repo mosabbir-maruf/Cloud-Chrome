@@ -89,16 +89,27 @@ the health check of the restored desktop:
 7. the restored Chrome and the Secret Service are checked;
 8. only then is the restore finalised and the rollback state disposed of.
 
-If any step fails, the previous profile, keyring and passphrase are put back,
-the previous desktop is started again, and the command exits non-zero. A
-failed restore never reports success and never leaves a partly installed
-state. The rollback state is kept when the previous desktop cannot be
-started either, so that the previous data stays recoverable, and the
-message says where it is.
+If any step fails, the previous profile, keyring and passphrase are put
+back, the previous desktop is started again, and the command exits non-zero.
+A failed restore never reports success and never leaves a partly installed
+state.
 
-If any step fails, the previous state is put back. A failed restore never
-leaves a partly replaced profile and never loses the previous keyring, and
-the exact failure is reported.
+**The rollback state is kept after a failure**, and its location is written
+to the supervisor's log, so the previous profile, keyring and passphrase stay
+recoverable whatever went wrong — including the case where the previous
+desktop could not be started either, which is reported with the path. The
+rollback state is only disposed of once the restore has succeeded and the
+restored desktop has passed its health checks.
+
+**The restore starts the restored desktop.** The transaction is verified
+against a running desktop, because "the profile was restored" is not the
+same as "the profile is usable". A restore therefore leaves the desktop
+running, whether it was running before or not.
+
+The files that Chrome owns are rewritten by Chrome when the restored
+desktop starts, so the content of the profile after a restore is the
+restored profile *as Chrome has used it*, not a byte-for-byte copy of the
+backup.
 
 The restore asks for confirmation when it is attached to a terminal. Use
 `--yes` for a non-interactive restore.

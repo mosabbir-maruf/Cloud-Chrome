@@ -59,7 +59,9 @@ fi
 
 mkdir -p "$state/chrome/Default"
 printf 'a-session-cookie' > "$state/chrome/Default/Cookies"
-printf 'the-original-history' > "$state/chrome/Default/History"
+# The marker is a file Chrome does not manage: the restore starts the
+# desktop again, and Chrome rewrites the files it owns.
+printf 'the-original-marker' > "$state/chrome/Default/CloudChromeMarker"
 
 # ---------------------------------------------------------------------------
 section "2. A backup with the stack stopped"
@@ -158,7 +160,7 @@ fi
 # ---------------------------------------------------------------------------
 section "4. A restore with the stack stopped"
 # ---------------------------------------------------------------------------
-printf 'changed-after-the-backup' > "$state/chrome/Default/History"
+printf 'changed-after-the-backup' > "$state/chrome/Default/CloudChromeMarker"
 "$CLI" restore --source "$backup_file" --yes > "$WORK/restore-stopped.txt" 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -167,8 +169,8 @@ else
     fail "the restore succeeds with the stack stopped" "exit $rc: $(head -3 "$WORK/restore-stopped.txt")"
 fi
 
-restored=$(cat "$state/chrome/Default/History" 2>/dev/null)
-if [ "$restored" = "the-original-history" ]; then
+restored=$(cat "$state/chrome/Default/CloudChromeMarker" 2>/dev/null)
+if [ "$restored" = "the-original-marker" ]; then
     pass "the restored profile holds the backed-up content"
 else
     fail "the restored profile holds the backed-up content" "$restored"
@@ -256,7 +258,7 @@ else
     fail "the stack is running" "$(bash "$CLI" status 2>/dev/null | grep '^stack:')"
 fi
 
-printf 'live-profile-marker' > "$state/chrome/Default/History"
+printf 'live-profile-marker' > "$state/chrome/Default/CloudChromeMarker"
 
 start_time=$(date +%s)
 "$CLI" backup --label "live" > "$WORK/backup-live.txt" 2>&1
@@ -315,7 +317,7 @@ else
 fi
 
 # The restore with the stack running.
-printf 'changed-before-the-live-restore' > "$state/chrome/Default/History"
+printf 'changed-before-the-live-restore' > "$state/chrome/Default/CloudChromeMarker"
 start_time=$(date +%s)
 "$CLI" restore --source "$live_backup" --yes > "$WORK/restore-live.txt" 2>&1
 rc=$?
@@ -338,7 +340,7 @@ else
     fail "the stack is running again after the restore" "$(bash "$CLI" status 2>/dev/null | grep '^stack:')"
 fi
 
-restored=$(cat "$state/chrome/Default/History" 2>/dev/null)
+restored=$(cat "$state/chrome/Default/CloudChromeMarker" 2>/dev/null)
 if [ "$restored" = "live-profile-marker" ]; then
     pass "the restored profile holds the backed-up content"
 else

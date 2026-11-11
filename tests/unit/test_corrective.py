@@ -373,6 +373,41 @@ class RestoreTransactionTest(StateCase):
         ]
         self.assertEqual(leftovers, [])
 
+    def test_a_failed_restore_keeps_the_rollback_state(self):
+        lifecycle = FakeLifecycle(running=True, fail_health=True)
+        with self.assertRaises(CloudChromeError):
+            backup_module.restore_transaction(
+                lifecycle, self.layout, self.config, source=self.source, assume_yes=True
+            )
+        kept = [
+            name
+            for name in os.listdir(self.layout.persist_dir)
+            if name.startswith(".cloudchrome-rollback.")
+        ]
+        self.assertEqual(
+            len(kept), 1, "the rollback state must be kept after a failure"
+        )
+
+    def test_the_kept_rollback_state_holds_the_previous_profile(self):
+        before = self._profile_marker()
+        lifecycle = FakeLifecycle(running=True, fail_health=True)
+        with self.assertRaises(CloudChromeError):
+            backup_module.restore_transaction(
+                lifecycle, self.layout, self.config, source=self.source, assume_yes=True
+            )
+        kept = [
+            name
+            for name in os.listdir(self.layout.persist_dir)
+            if name.startswith(".cloudchrome-rollback.")
+        ]
+        self.assertEqual(len(kept), 1)
+        saved = os.path.join(self.layout.persist_dir, kept[0], "chrome")
+        self.assertTrue(os.path.isdir(saved))
+        marker = os.path.join(saved, "Default", "Cookies")
+        self.assertTrue(os.path.isfile(marker))
+        with open(marker, "r", encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), before)
+
 
 class PayloadTest(StateCase):
     """What goes into a backup, and what does not."""

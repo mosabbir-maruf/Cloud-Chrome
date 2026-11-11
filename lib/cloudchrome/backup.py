@@ -760,12 +760,16 @@ def _dispose_rollback(rollback):
 def _recover(lifecycle, layout, rollback, swapped, was_running, failure):
     """Put the previous state back and restart the previous desktop.
 
-    The rollback state is kept when the previous desktop cannot be started,
-    so that the previous profile, keyring and passphrase stay recoverable.
+    The rollback state is **kept** after a failure and its location is
+    reported, so the previous profile, keyring and passphrase stay
+    recoverable whatever went wrong. It is only disposed of once the restore
+    has succeeded and the restored desktop has passed its health checks.
     """
+    restored = False
     if rollback is not None and swapped:
         try:
             _rollback(layout, rollback)
+            restored = True
         except OSError as exc:
             logutil.append(
                 layout.supervisor_log,
@@ -773,6 +777,7 @@ def _recover(lifecycle, layout, rollback, swapped, was_running, failure):
                 max_bytes=5242880,
                 keep=3,
             )
+
     if was_running:
         try:
             lifecycle.start()
@@ -785,8 +790,28 @@ def _recover(lifecycle, layout, rollback, swapped, was_running, failure):
                 "started either (%s); the previous state is kept in %s"
                 % (failure, exc, rollback)
             ) from failure
-        if rollback is not None:
-            _dispose_rollback(rollback)
+
+    if rollback is not None:
+        if restored:
+            # The previous state is back in place and the previous desktop
+            # runs again. The rollback copy is still kept, so that the data
+            # is recoverable even if the state that was put back is itself
+            # damaged.
+            logutil.append(
+                layout.supervisor_log,
+                "the restore failed (%s); the previous state was put back and "
+                "is also kept in %s" % (failure, rollback),
+                max_bytes=5242880,
+                keep=3,
+            )
+        else:
+            logutil.append(
+                layout.supervisor_log,
+                "the restore failed (%s) and the previous state could not be "
+                "put back; it is kept in %s" % (failure, rollback),
+                max_bytes=5242880,
+                keep=3,
+            )
 
 
 def _verify_installed(layout):
