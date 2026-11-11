@@ -311,6 +311,15 @@ class Supervisor:
         )
         reader.start()
 
+        # The daemon must own the secret service before any client calls it.
+        # gnome-keyring installs a D-Bus service that activates a second,
+        # locked daemon on the first client call, and that daemon wins the
+        # name; it has no login collection, so every store would fail.
+        keyring_policy.wait_for_secret_service(
+            env, process.pid, self.layout.keyring_store_file
+        )
+        self.log("the keyring daemon serves the secret service")
+
         # The secret service must genuinely work before Chrome is started.
         self._secret_check = keyring_policy.verify_secret_service(env)
         self.log("the secret service stored and returned a probe secret")

@@ -79,6 +79,14 @@ def keyring_arguments():
     standard input, and creates the login keyring when it does not exist
     yet. The passphrase is therefore never visible in the process table.
 
+    ``--replace`` is required. gnome-keyring installs a D-Bus service that
+    activates a second, *locked* daemon the moment the first client calls the
+    Secret Service, and that activated daemon wins the
+    ``org.freedesktop.secrets`` name. The daemon that never received the
+    passphrase has no login collection, so every store fails with
+    "Object does not exist at path .../collection/login". ``--replace``
+    displaces the activated daemon instead.
+
     ``--foreground`` keeps the daemon as a child of the supervisor, so the
     supervisor owns its lifecycle.
     """
@@ -86,8 +94,89 @@ def keyring_arguments():
         "gnome-keyring-daemon",
         "--foreground",
         "--unlock",
+        "--replace",
         "--components=secrets",
     ]
+
+
+def secret_service_owner_pid(env, timeout=10):
+    """The PID of the process that owns ``org.freedesktop.secrets``.
+
+    The bus is asked directly, because the name owner is the only reliable
+    answer: a daemon that is alive but lost the name race still satisfies
+    every other check.
+    """
+    if shutil.which("dbus-send") is None:
+        return None
+
+    def ask(*arguments):
+        result = subprocess.run(
+            [
+                "dbus-send",
+                "--session",
+                "--dest=org.freedesktop.DBus",
+                "--print-reply=literal",
+                "/org/freedesktop/DBus",
+            ]
+            + list(arguments),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+        return result.stdout.decode("utf-8", "replace").strip()
+
+    owner = ask("org.freedesktop.DBus.GetNameOwner", "string:org.freedesktop.secrets")
+    if not owner or owner.startswith("Error"):
+        return None
+    reply = ask(
+        "org.freedesktop.DBus.GetConnectionUnixProcessID", "string:%s" % owner
+    )
+    match = None
+    for token in reply.replace("(", " ").replace(")", " ").split():
+        if token.isdigit():
+            match = int(token)
+    return match
+
+
+def wait_for_secret_service(env, daemon_pid, keyring_file, timeout=30.0, interval=0.25):
+    """Wait until the unlocking daemon serves the Secret Service.
+
+    Three things have to be true before the first client call: the daemon
+    must still be alive, it must own the ``org.freedesktop.secrets`` name,
+    and the login keyring must exist. The order matters: the wait happens
+    before any client call, so the D-Bus service never activates the
+    competing daemon.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if daemon_pid is not None and not _pid_alive(daemon_pid):
+            raise UnsupportedError(
+                "the keyring daemon exited before it served the secret service"
+            )
+        if os.path.exists(keyring_file):
+            owner = secret_service_owner_pid(env)
+            if owner == daemon_pid:
+                return True
+        time.sleep(interval)
+    raise UnsupportedError(
+        "the keyring daemon did not take ownership of the secret service within "
+        "%ds" % int(timeout)
+    )
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        import errno
+
+        if exc.errno == errno.ESRCH:
+            return False
+    return True
 
 
 def secret_tool_available():

@@ -161,6 +161,37 @@ else
     fail "the keyring data is in the persistent directory" "no keyring file"
 fi
 
+# The daemon must own the secret service, and it must be the daemon that
+# was started here: gnome-keyring installs a D-Bus service that activates a
+# second, locked daemon on the first client call, and that one wins the name
+# unless it is displaced.
+python3 - <<'PY' > "$WORK/owner.txt" 2>&1
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
+from cloudchrome import keyring
+from cloudchrome.config import load_config
+from cloudchrome.paths import Layout
+
+config = load_config()
+layout = Layout(config)
+env = keyring.dbus_environment(
+    layout.dbus_socket, layout.xdg_runtime_dir, layout.xdg_data_home)
+env["GNOME_KEYRING_CONTROL"] = os.path.join(layout.xdg_runtime_dir, "keyring")
+daemon_pid = int(open("/tmp/cloudchrome-keyring-daemon.pid").read().strip())
+print("daemon_pid=%d" % daemon_pid)
+print("owner_pid=%s" % keyring.secret_service_owner_pid(env))
+print("login_keyring=%s" % os.path.exists(layout.keyring_store_file))
+PY
+sed 's/^/      /' "$WORK/owner.txt"
+
+owner=$(sed -n 's/^owner_pid=//p' "$WORK/owner.txt")
+daemon=$(sed -n 's/^daemon_pid=//p' "$WORK/owner.txt")
+if [ -n "$owner" ] && [ "$owner" = "$daemon" ]; then
+    pass "the daemon that was started owns the secret service" "pid=$owner"
+else
+    fail "the daemon that was started owns the secret service" "owner=$owner daemon=$daemon"
+fi
+
 # ---------------------------------------------------------------------------
 section "4. The secret service"
 # ---------------------------------------------------------------------------

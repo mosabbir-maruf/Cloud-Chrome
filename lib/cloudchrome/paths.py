@@ -244,6 +244,11 @@ class Layout:
         return os.path.join(self.xdg_data_home, "keyrings")
 
     @property
+    def keyring_store_file(self):
+        """The login keyring the keyring daemon creates."""
+        return os.path.join(self.keyring_store_dir, "login.keyring")
+
+    @property
     def chrome_log(self):
         return os.path.join(self.log_dir, "chrome.log")
 

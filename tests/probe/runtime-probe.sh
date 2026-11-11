@@ -187,6 +187,10 @@ print(load_config().persist_dir)")"
 
 "$CLI" init > /dev/null 2>&1
 kv "init exit" "$?"
+PERSIST=$(python3 -c "
+import sys; sys.path.insert(0, '$REPO_ROOT/lib')
+from cloudchrome.config import load_config
+print(load_config().persist_dir)")
 "$CLI" status
 
 # ---------------------------------------------------------------------------
@@ -201,7 +205,7 @@ if [ "$start_rc" -ne 0 ]; then
 fi
 
 sleep 5
-"$CLI" status
+"$CLI" status | tee "$WORK/status.txt"
 kv "supervisor state file" "$(python3 -c "
 import json, sys
 sys.path.insert(0, '$REPO_ROOT/lib')
@@ -216,7 +220,18 @@ except Exception as exc:
 # ---------------------------------------------------------------------------
 section "4. The processes"
 # ---------------------------------------------------------------------------
-printf -- '--- the component processes ---\n'
+# The component logs are shown when a component did not come up, because
+# that is where the reason is.
+if grep -q "^error:" "$WORK/status.txt" 2>/dev/null; then
+    printf -- '\n--- the component logs ---\n'
+    for log in "$PERSIST"/logs/*.log; do
+        [ -e "$log" ] || continue
+        printf -- '\n=== %s ===\n' "$(basename "$log")"
+        tail -25 "$log" | sed 's/^/      /'
+    done
+fi
+
+printf -- '\n--- the component processes ---\n'
 ps -eo pid,ppid,user,stat,args 2>/dev/null | grep -E "[X]tigervnc|[d]bus-daemon|[g]nome-keyring|[x]fce4-session|[x]fwm4|[w]ebsockify|[g]oogle-chrome" | head -30
 
 printf -- '\n--- no duplicate supervisor or desktop stack ---\n'
