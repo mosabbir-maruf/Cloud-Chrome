@@ -134,7 +134,8 @@ for measurement in \
     'the backup summary' \
     'the restore summary' \
     'the cgroup memory' \
-    'the busy share of the machine' \
+    'the CPU time of the desktop' \
+    'the busy share of the host' \
     'the RFB handshake completed' \
     'the noVNC url'
 do
@@ -144,6 +145,15 @@ do
         fail "the performance probe measures: $measurement"
     fi
 done
+
+# The comparison against another commit has to be there, because it is
+# the only before and after that is not at the mercy of the load of the
+# host.
+if grep -q 'CLOUDCHROME_PERF_COMPARE_COMMIT' "$PERF"; then
+    pass "the performance probe compares two commits in one container"
+else
+    fail "the performance probe compares two commits in one container"
+fi
 
 # The sample counts have to be the ones the report promises.
 if grep -q 'STARTUP_SAMPLES:-10' "$PERF" && grep -q 'BACKUP_SAMPLES:-5' "$PERF"; then
