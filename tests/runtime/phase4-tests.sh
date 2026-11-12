@@ -441,6 +441,21 @@ for entry in os.listdir("/proc"):
     if "cloudchrome" in joined and "supervisor" in joined:
         leftover += 1
 print("supervisors_left=%d" % leftover)
+
+# No component of the desktop may be left running either: a supervisor that
+# exits without stopping what it started leaves an orphaned desktop.
+markers = ("Xtigervnc", "gnome-keyring-daemon", "xfce4-session", "websockify")
+leftover_components = 0
+for entry in os.listdir("/proc"):
+    if not entry.isdigit():
+        continue
+    argv = procs.read_cmdline(int(entry))
+    joined = " ".join(argv)
+    if any(marker in joined for marker in markers):
+        leftover_components += 1
+    elif "--user-data-dir=%s" % layout.chrome_dir in joined:
+        leftover_components += 1
+print("components_left=%d" % leftover_components)
 PY
 
 grep -q "supervisor_exited=True" "$WORK/sigterm.txt" \
@@ -458,7 +473,7 @@ grep -q "supervisors_left=0" "$WORK/sigterm.txt" \
 grep -q "components_left=0" "$WORK/sigterm.txt" \
     && pass "no component is left running after SIGTERM" \
     || fail "no component is left running after SIGTERM" \
-        "$(sed -n 's/^components_left=//p' "$WORK/sigterm.txt")"
+        "$(tr '\n' ' ' < "$WORK/sigterm.txt")"
 
 # ---------------------------------------------------------------------------
 section "6. The privilege audit"
