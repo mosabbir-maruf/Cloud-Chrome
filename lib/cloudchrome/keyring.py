@@ -144,7 +144,9 @@ def secret_service_owner_pid(env, timeout=10):
     return match
 
 
-def wait_for_secret_service(env, daemon_pid, keyring_file, timeout=30.0, interval=0.1):
+def wait_for_secret_service(
+    env, daemon_pid, keyring_file, timeout=30.0, interval=0.25, should_stop=None
+):
     """Wait until the unlocking daemon serves the Secret Service.
 
     Three things have to be true before the first client call: the daemon
@@ -152,17 +154,26 @@ def wait_for_secret_service(env, daemon_pid, keyring_file, timeout=30.0, interva
     and the login keyring must exist. The order matters: the wait happens
     before any client call, so the D-Bus service never activates the
     competing daemon.
+
+    ``should_stop`` is called at the top of every round. It may raise, and
+    that interrupts the wait, so a stop request is honoured while the
+    keyring is coming up.
     """
     import time
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if should_stop is not None:
+            should_stop()
         if daemon_pid is not None and not _pid_alive(daemon_pid):
             raise UnsupportedError(
                 "the keyring daemon exited before it served the secret service"
             )
         if os.path.exists(keyring_file):
-            owner = secret_service_owner_pid(env)
+            # The bus is asked with the time that is left, so that the
+            # wait as a whole is bounded by its timeout.
+            remaining = max(1.0, deadline - time.monotonic())
+            owner = secret_service_owner_pid(env, timeout=remaining)
             if owner == daemon_pid:
                 return True
         time.sleep(interval)
@@ -212,7 +223,7 @@ def secret_tool_available():
     return shutil.which("secret-tool") is not None
 
 
-def verify_secret_service(env, timeout=25):
+def verify_secret_service(env, timeout=25, should_stop=None):
     """Store, read back and delete a secret.
 
     This is the decisive check that the secret service genuinely works. The
@@ -221,6 +232,10 @@ def verify_secret_service(env, timeout=25):
 
     It returns a dictionary describing the outcome; the secret itself is
     random and is never logged.
+
+    ``should_stop`` is called before every step. It may raise, and that
+    interrupts the check, so a stop request is honoured while the secret
+    service is being verified.
     """
     if not secret_tool_available():
         raise UnsupportedError(
@@ -239,21 +254,28 @@ def verify_secret_service(env, timeout=25):
     # become part of the stored value.
     pairs = ["application", "cloudchrome"]
 
+    deadline = time.monotonic() + timeout
+
     def run(args, stdin=None):
+        # The call is given the time that is left, so that the check as a
+        # whole is bounded by its timeout and not by the timeout of every
+        # single call.
+        remaining = max(1.0, deadline - time.monotonic())
         return subprocess.run(
             args,
             input=stdin.encode("utf-8") if stdin is not None else None,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout,
+            timeout=remaining,
             check=False,
         )
 
-    deadline = time.monotonic() + timeout
     store = None
     last_error = ""
     while True:
+        if should_stop is not None:
+            should_stop()
         store = run(
             ["secret-tool", "store", "--label=Cloud-Chrome probe"] + pairs,
             stdin=probe,
@@ -269,6 +291,8 @@ def verify_secret_service(env, timeout=25):
             )
         time.sleep(0.5)
 
+    if should_stop is not None:
+        should_stop()
     lookup = run(["secret-tool", "lookup"] + pairs)
     if lookup.returncode != 0:
         raise UnsupportedError(

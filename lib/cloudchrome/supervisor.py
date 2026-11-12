@@ -331,12 +331,17 @@ class Supervisor:
         # locked daemon on the first client call, and that daemon wins the
         # name; it has no login collection, so every store would fail.
         keyring_policy.wait_for_secret_service(
-            env, process.pid, self.layout.keyring_store_file
+            env,
+            process.pid,
+            self.layout.keyring_store_file,
+            should_stop=self._stop_requested,
         )
         self.log("the keyring daemon serves the secret service")
 
         # The secret service must genuinely work before Chrome is started.
-        self._secret_check = keyring_policy.verify_secret_service(env)
+        self._secret_check = keyring_policy.verify_secret_service(
+            env, should_stop=self._stop_requested
+        )
         self.log("the secret service stored and returned a probe secret")
 
         # The control socket is where the daemon that owns the name can be
@@ -384,6 +389,18 @@ class Supervisor:
             )
             time.sleep(1.0)
 
+    def _stop_requested(self):
+        """Raise when a stop was requested.
+
+        The callback is handed to the waits that cannot be interrupted
+        otherwise, so that a stop request is honoured while the keyring is
+        coming up and while the secret service is being verified. A
+        supervisor that ignores a stop request leaves its components
+        running.
+        """
+        if self._stopping:
+            raise Stopped("a stop was requested while the stack was starting")
+
     def _wait_for_window_manager(self, timeout=20.0, interval=0.15):
         """True when a window manager is running for the desktop.
 
@@ -392,6 +409,7 @@ class Supervisor:
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            self._stop_requested()
             component = self.components.get("desktop")
             if component is not None and not component.alive():
                 return False
@@ -460,6 +478,7 @@ class Supervisor:
         deadline = time.monotonic() + timeout
         started = time.monotonic()
         while time.monotonic() < deadline:
+            self._stop_requested()
             component = self.components.get("chrome")
             if component is None or not component.alive():
                 code = None
