@@ -33,6 +33,13 @@ STARTUP_SAMPLES="${CLOUDCHROME_PERF_STARTUP_SAMPLES:-10}"
 BACKUP_SAMPLES="${CLOUDCHROME_PERF_BACKUP_SAMPLES:-5}"
 IDLE_SECONDS="${CLOUDCHROME_PERF_IDLE_SECONDS:-30}"
 
+# The commit to compare against, for the same-container comparison. The
+# probe measures the startup with the code of the checkout and then with
+# the code of that commit, so that the two numbers come from the same
+# machine, under the same conditions and within the same minutes. That is
+# the only comparison that is not at the mercy of the load of the host.
+COMPARE_COMMIT="${CLOUDCHROME_PERF_COMPARE_COMMIT:-}"
+
 # The isolated state. It lives in the work directory, which is removed on
 # exit, and it is never the state directory of the repository.
 STATE_ROOT="$WORK/state"
@@ -196,23 +203,37 @@ section "3. Startup"
 # measurement is the wall clock time from the command to a desktop that
 # reports itself healthy, so it includes the time the runtime needs to
 # start the supervisor, the components and Chrome.
-startup_samples=""
-startup_failures=0
-for index in $(seq 1 "$STARTUP_SAMPLES"); do
-    bash "$CLI" stop >/dev/null 2>&1 || true
-    sleep 1
-    started=$(now_ms)
-    if bash "$CLI" start > "$WORK/start.log" 2>&1 && wait_until_healthy; then
-        finished=$(now_ms)
-        elapsed=$((finished - started))
-        startup_samples="$startup_samples$elapsed"$'\n'
-        printf 'sample %2d  %6d ms\n' "$index" "$elapsed"
-    else
-        startup_failures=$((startup_failures + 1))
-        printf 'sample %2d  FAILED\n' "$index"
-        tail -5 "$WORK/start.log" | sed 's/^/      /'
-    fi
-done
+# Measure the startup a number of times and print the samples.
+#
+# Every sample is a full stop, a full start and a health check. The
+# measurement is the wall clock time from the command to a desktop that
+# reports itself healthy, so it includes the time the runtime needs to
+# start the supervisor, the components and Chrome.
+measure_startup() {
+    local label="$1"
+    local samples="" failures=0 index elapsed started finished
+    for index in $(seq 1 "$STARTUP_SAMPLES"); do
+        bash "$CLI" stop >/dev/null 2>&1 || true
+        sleep 1
+        started=$(now_ms)
+        if bash "$CLI" start > "$WORK/start.log" 2>&1 && wait_until_healthy; then
+            finished=$(now_ms)
+            elapsed=$((finished - started))
+            samples="$samples$elapsed"$'\n'
+            printf '%s sample %2d  %6d ms\n' "$label" "$index" "$elapsed"
+        else
+            failures=$((failures + 1))
+            printf '%s sample %2d  FAILED\n' "$label" "$index"
+            tail -5 "$WORK/start.log" | sed 's/^/      /'
+        fi
+    done
+    STARTUP_SAMPLES_RAW="$samples"
+    STARTUP_FAILURES="$failures"
+}
+
+measure_startup "the startup"
+startup_samples="$STARTUP_SAMPLES_RAW"
+startup_failures="$STARTUP_FAILURES"
 kv "the startup failures" "$startup_failures of $STARTUP_SAMPLES"
 kv "the startup summary (ms)" "$(stats_summary "$startup_samples")"
 
@@ -220,6 +241,33 @@ kv "the startup summary (ms)" "$(stats_summary "$startup_samples")"
 # so the timeline shows where the time went.
 printf -- '\n--- the timeline of the last startup ---\n'
 tail -25 "$CLOUDCHROME_PERSIST_DIR/logs/supervisor.log" 2>/dev/null | sed 's/^/  /'
+
+# ---------------------------------------------------------------------------
+section "3b. The same-container comparison"
+# ---------------------------------------------------------------------------
+# The same startup, measured with the code of another commit, in this
+# container and under these conditions. Only the runtime is swapped: the
+# probe script itself is left alone, so that it keeps running.
+if [ -z "$COMPARE_COMMIT" ]; then
+    kv "the comparison" "not requested; set CLOUDCHROME_PERF_COMPARE_COMMIT"
+else
+    original=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+    kv "the code of the checkout" "${original:0:7}"
+    kv "the code of the comparison" "$(printf '%s' "$COMPARE_COMMIT" | cut -c1-7)"
+    if git -C "$REPO_ROOT" cat-file -e "$COMPARE_COMMIT^{commit}" 2>/dev/null; then
+        if git -C "$REPO_ROOT" checkout --quiet "$COMPARE_COMMIT" -- lib 2>/dev/null; then
+            measure_startup "the comparison"
+            kv "the compared summary (ms)" "$(stats_summary "$STARTUP_SAMPLES_RAW")"
+            kv "the compared failures" "$STARTUP_FAILURES of $STARTUP_SAMPLES"
+            git -C "$REPO_ROOT" checkout --quiet "$original" -- lib 2>/dev/null || true
+            kv "the code is restored" "yes"
+        else
+            kv "the comparison" "FAILED: the runtime could not be swapped"
+        fi
+    else
+        kv "the comparison" "FAILED: the commit is not in this checkout"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 section "4. Shutdown"
@@ -315,26 +363,46 @@ section "7. The idle CPU"
 # ---------------------------------------------------------------------------
 # The desktop is idle while this is measured. The sample is the share of
 # the machine that was busy over the interval.
+CLOUDCHROME_PERF_PIDS="$(component_pids)"
+export CLOUDCHROME_PERF_PIDS
 python3 - "$IDLE_SECONDS" <<'PY'
 import os, sys, time
 sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "tests", "probe", "lib"))
 import metrics
 
 seconds = float(sys.argv[1])
-first = metrics.cpu_snapshot()
+pids = [int(pid) for pid in os.environ.get("CLOUDCHROME_PERF_PIDS", "").split()
+        if pid.isdigit()]
+
+before = metrics.process_cpu_seconds(pids)
+host_before = metrics.cpu_snapshot()
 started = time.monotonic()
 time.sleep(seconds)
-second = metrics.cpu_snapshot()
+host_after = metrics.cpu_snapshot()
 elapsed = time.monotonic() - started
-usage = metrics.cpu_usage_between(first, second, elapsed)
-if usage is None:
-    print("%-46s unavailable" % "the idle CPU")
+after = metrics.process_cpu_seconds(pids)
+
+print("%-46s %s" % ("the idle interval (s)", round(elapsed, 1)))
+print("%-46s %s" % ("the processes that were measured", len(pids)))
+
+if before is None or after is None:
+    print("%-46s unavailable" % "the CPU time of the desktop")
 else:
-    print("%-46s %s" % ("the idle interval (s)", round(elapsed, 1)))
-    print("%-46s %.4f" % ("the busy share of the machine", usage["busy_fraction"]))
-    print("%-46s %s of %s jiffies" % (
-        "the busy jiffies", usage["busy_jiffies"], usage["total_jiffies"]))
-    print("%-46s %.2f%%" % ("the busy share in percent", usage["busy_fraction"] * 100))
+    used = after - before
+    print("%-46s %.3f s" % ("the CPU time of the desktop", used))
+    print("%-46s %.2f%%" % ("the share of one CPU", used / elapsed * 100))
+    print("%-46s %.2f%%" % (
+        "the share of the two CPUs of the machine", used / elapsed / 2 * 100))
+
+usage = metrics.cpu_usage_between(host_before, host_after, elapsed)
+if usage is None:
+    print("%-46s unavailable" % "the busy share of the host")
+else:
+    print("%-46s %.2f%%" % ("the busy share of the host", usage["busy_fraction"] * 100))
+    print("%-46s %s" % (
+        "the note about the host",
+        "the host counters include every other tenant of the machine, so "
+        "they are context and not a measure of the desktop"))
 PY
 
 # ---------------------------------------------------------------------------

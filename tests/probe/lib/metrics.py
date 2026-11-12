@@ -211,6 +211,37 @@ def cpu_snapshot():
     return {"available": False}
 
 
+def process_cpu_seconds(pids):
+    """The CPU time the given processes have used, in seconds.
+
+    The value is the sum of the user and the system time of the
+    processes, read from ``/proc/<pid>/stat``. It is the CPU the
+    processes themselves used, which is the number that says how much the
+    desktop costs while it is idle.
+
+    It is measured this way, and not from ``/proc/stat``, because inside a
+    container ``/proc/stat`` holds the counters of the **host**, which
+    includes every other tenant of the machine. That number moves with
+    the load of the machine and says nothing about the desktop.
+    """
+    ticks = os.sysconf("SC_CLK_TCK")
+    total = 0
+    known = True
+    for pid in pids:
+        try:
+            with open("/proc/%s/stat" % pid, encoding="utf-8") as handle:
+                fields = handle.read().rsplit(")", 1)[1].split()
+            # The fields after the command name: state is the first, and
+            # the user and the system time are the twelfth and the
+            # thirteenth.
+            total += int(fields[11]) + int(fields[12])
+        except (OSError, ValueError, IndexError):
+            known = False
+    if not known and not pids:
+        return None
+    return total / float(ticks)
+
+
 def cpu_usage_between(first, second, elapsed):
     """The share of the machine that was busy between two snapshots."""
     if not first.get("available") or not second.get("available"):
