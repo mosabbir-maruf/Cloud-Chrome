@@ -222,20 +222,21 @@ the same run is issue
 
 ### The whole picture
 
-The "before" column is the baseline run, the "after" column is the final
-run, and both are in the same machine type.
+The "before" column is the baseline run, the "after" column is the run of
+the release candidate, and both are in the same machine type.
 
 | Measurement | Before | After | The change |
 |---|---|---|---|
 | The startup, median | 4 222 ms | **2 441 ms** | **−42 %** |
 | The startup, same container | 4 892 / 4 802 / 4 792 ms | **2 454 / 2 287 / 2 441 ms** | **−50 % / −52 % / −49 %** |
-| The shutdown, median | 509 ms | 638 ms | within the noise |
-| The warm start, median | 65 ms | 67 ms | within the noise |
-| The backup, median | 6 793 ms | **5 345 ms** | **−21 %** |
-| The restore, median | 5 441 ms | **4 308 ms** | **−21 %** |
-| The proportional set size | 363 MiB | 359 MiB | unchanged |
-| The idle CPU of the desktop | not measured in a container way | 3.87 % of one CPU | measured |
-| The archive of a backup | 41 MiB, 459 members | 41 MiB, 461 members | unchanged |
+| The shutdown, median | 509 ms | 668 ms | within the noise |
+| The warm start, median | 65 ms | 114 ms | within the noise |
+| The backup, median | 6 793 ms | **5 292 ms** | **−22 %** |
+| The restore, median | 5 441 ms | **4 328 ms** | **−20 %** |
+| The proportional set size | 363 MiB | 362 MiB | unchanged |
+| The idle CPU of the desktop | not measured in a container way | 3.93 % of one CPU | measured |
+| The noVNC response, median | 3.99 ms | 4.18 ms | within the noise |
+| The archive of a backup | 41 MiB, 459 members | 41 MiB, 460 members | unchanged |
 
 The backup and the restore are faster for the same reason: the backup
 stops the desktop for the snapshot and starts it again, and the restore
@@ -251,17 +252,17 @@ user and the system time of the processes of the desktop:
 
 | | |
 |---|---|
-| The CPU time of the desktop | 1.160 s in 30 s |
-| The share of one CPU | 3.87 % |
-| The share of the two CPUs of the machine | 1.93 % |
-| The busy share of the host in the same window | 4.46 % |
+| The CPU time of the desktop | 1.180 s in 30 s |
+| The share of one CPU | 3.93 % |
+| The share of the two CPUs of the machine | 1.97 % |
+| The busy share of the host in the same window | 5.74 % |
 
 The desktop is almost all of the load of the machine in that window. The
 host counters are reported because they are the context, and they are
 explicitly **not** a measure of the desktop: a run of the probe on a
 busy host reported 29.57 % for the host while the desktop itself used
-3.87 % of one CPU. Two independent runs measured 3.87 % and 3.93 % for
-the desktop, which is the repeatability of the metric.
+3.87 % of one CPU. Three independent runs measured 3.87 %, 3.93 % and
+3.93 % for the desktop, which is the repeatability of the metric.
 
 ---
 
