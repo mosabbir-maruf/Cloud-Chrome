@@ -15,6 +15,7 @@ cloudchrome url         # the noVNC URL of this Codespace
 ```
 
 - [What it does](#what-it-does)
+- [Screenshots](#screenshots)
 - [The architecture](#the-architecture)
 - [The browser-only access model](#the-browser-only-access-model)
 - [Quick start](#quick-start)
@@ -49,6 +50,17 @@ cloudchrome url         # the noVNC URL of this Codespace
 - **A backup is a transaction.** A restore is validated, staged, installed,
   verified and started as one operation under one lock. A failure puts the
   previous state back.
+
+---
+
+## Screenshots
+
+The desktop is a real one, and this is what the browser shows.
+
+| **Chrome Browser** | **Linux Desktop** |
+|---|---|
+| <img src="public/chrome-screenshot.webp" alt="Google Chrome running inside the Cloud-Chrome desktop, showing a new tab page" width="100%" /> | <img src="public/os-screenshot.webp" alt="The XFCE desktop environment of the Cloud-Chrome Codespace, with the top panel, the desktop icons and the dock" width="100%" /> |
+| Google Chrome running inside Cloud-Chrome. | The Linux desktop environment running inside the Codespace. |
 
 ---
 
