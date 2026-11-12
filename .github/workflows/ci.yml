@@ -324,6 +324,17 @@ jobs:
           VERIFY
           docker run --rm -i "$IMAGE_NAME" bash -s < "$RUNNER_TEMP/verify-image.sh"
 
+      - name: Run the runtime unit tests inside the image
+        run: |
+          set -euo pipefail
+          # The age tools are part of the image, so the tests that need
+          # them run here. On the runner they are skipped, and the tests
+          # that cover the restore transaction would never run at all.
+          docker run --rm -i \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" python3 -m unittest discover -s /repo/tests/unit -t /repo/tests/unit -v \
+            | tee "$RUNNER_TEMP/unit-in-image.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Audit the base image's sudo grant
         run: |
           set -euo pipefail
