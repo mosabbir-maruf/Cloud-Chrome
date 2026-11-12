@@ -31,6 +31,7 @@ The design decisions that the requirements ask for:
 import io
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -597,6 +598,32 @@ def _close_stream(process):
 # ---------------------------------------------------------------------------
 # the restore transaction
 # ---------------------------------------------------------------------------
+class RestoreState:
+    """What the restore transaction did to the desktop stack.
+
+    The recovery must not guess which stack is running: it has to know what
+    the transaction itself did. The state records:
+
+    * ``original_running`` -- the stack was running when the restore began;
+    * ``original_stopped`` -- the transaction stopped that stack;
+    * ``restored_start_attempted`` -- the transaction tried to start the
+      restored stack;
+    * ``swapped`` -- the live state was already replaced.
+
+    The start of the restored stack is recorded **before** the call, because
+    a start that fails half way may have left a stack behind, and the
+    recovery has to clean that up. A stack that was already running when
+    the start was attempted was not started by this transaction, so the
+    recovery never stops it.
+    """
+
+    def __init__(self):
+        self.original_running = False
+        self.original_stopped = False
+        self.restored_start_attempted = False
+        self.swapped = False
+
+
 def restore_transaction(
     lifecycle,
     layout,
@@ -624,8 +651,9 @@ def restore_transaction(
     The caller holds the control lock for the whole transaction, so the
     operation is serialised with start, stop, restart, backup and prune.
 
-    If anything fails, the previous profile, keyring and passphrase are put
-    back, the previous desktop is started again, and the failure is
+    If anything fails, the restored stack is stopped and confirmed to be
+    stopped, the previous profile, keyring and passphrase are put back, the
+    previous desktop is started again and checked, and the failure is
     returned. A failed restore never reports success and never leaves a
     partly installed state.
     """
@@ -647,8 +675,8 @@ def restore_transaction(
     os.chmod(staging, OWNER_ONLY_DIR)
 
     rollback = None
-    was_running = lifecycle.is_running()
-    swapped = False
+    state = RestoreState()
+    state.original_running = lifecycle.is_running()
     try:
         # 1. Validate and stage the archive completely. The plaintext is
         #    streamed through a pipe and never lands on the filesystem.
@@ -657,8 +685,9 @@ def restore_transaction(
         )
 
         # 2. Stop the running stack.
-        if was_running:
+        if state.original_running:
             lifecycle.stop()
+            state.original_stopped = True
 
         # 3. and 4. Preserve the previous state and install the staged one.
         rollback = tempfile.mkdtemp(
@@ -670,13 +699,27 @@ def restore_transaction(
         # after the first move would otherwise leave the live state
         # replaced and nothing to put back, because the rollback only
         # restores what the rollback directory actually holds.
-        swapped = True
+        state.swapped = True
         _swap_in(layout, staging, rollback)
 
         # 5. Verify the ownership and the permissions.
         _verify_installed(layout)
 
         # 6. Start the restored desktop.
+        #
+        # A stack that is already running was not started by this
+        # transaction: the recovery must not stop it, and it must not
+        # replace the profile it is using. The start refuses it, and the
+        # recovery reports that the live state was left alone.
+        if lifecycle.is_running():
+            raise CloudChromeError(
+                "a desktop stack is running that this restore did not start; "
+                "the live state was left alone"
+            )
+        # The attempt is recorded before the call: a start that fails half
+        # way may have left a stack behind, and the recovery has to clean
+        # that up.
+        state.restored_start_attempted = True
         lifecycle.start()
 
         # 7. Confirm that the restored Chrome and the Secret Service are
@@ -698,10 +741,10 @@ def restore_transaction(
             "members": len(built["members"]),
             "created_utc": built["created_utc"],
             "health": health,
-            "restarted": was_running,
+            "restarted": state.original_running,
         }
     except BaseException as failure:
-        _recover(lifecycle, layout, rollback, swapped, was_running, failure)
+        _recover(lifecycle, layout, state, rollback, failure)
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -762,19 +805,68 @@ def _dispose_rollback(rollback):
     shutil.rmtree(rollback, ignore_errors=True)
 
 
-def _recover(lifecycle, layout, rollback, swapped, was_running, failure):
+def _recover(lifecycle, layout, state, rollback, failure):
     """Put the previous state back and restart the previous desktop.
+
+    The order matters, and it is the reason the state is tracked instead of
+    guessed from ``is_running()``:
+
+    1. the restored stack is stopped, and it is **confirmed** to be stopped,
+       before anything of the live state is touched. A restored desktop
+       that is still up may be writing to the profile that is about to be
+       replaced;
+    2. the previous profile, keyring and passphrase are put back from the
+       retained rollback copy;
+    3. the previous desktop is started again, and its health is checked,
+       when it was running before the restore;
+    4. a stack that was stopped before the restore is left stopped.
 
     The rollback state is **kept** after a failure and its location is
     reported, so the previous profile, keyring and passphrase stay
     recoverable whatever went wrong. It is only disposed of once the restore
     has succeeded and the restored desktop has passed its health checks.
     """
-    restored = False
-    if rollback is not None and swapped:
+    # 1. Stop the restored stack, if this transaction started one. A stack
+    #    that this transaction did not start is never stopped.
+    if state.restored_start_attempted:
+        stopped, reason = _stop_stack(lifecycle)
+        if not stopped:
+            logutil.append(
+                layout.supervisor_log,
+                "the restore failed (%s) and the restored desktop could not be "
+                "stopped (%s); the previous state is kept in %s"
+                % (failure, reason, rollback),
+                max_bytes=5242880,
+                keep=3,
+            )
+            raise CloudChromeError(
+                "the restore failed (%s) and the restored desktop could not be "
+                "stopped (%s); the previous state is kept in %s"
+                % (failure, reason, rollback)
+            ) from failure
+
+    # 2. The live state is only replaced when no stack is using it.
+    if state.swapped:
+        if lifecycle.is_running():
+            # A stack that this transaction did not start is using the live
+            # state. Replacing it now would corrupt the profile it is
+            # using, so the live state is left alone and the previous data
+            # stays in the rollback directory.
+            logutil.append(
+                layout.supervisor_log,
+                "the restore failed (%s) and a desktop stack was still using "
+                "the live state; it was left alone and the previous state is "
+                "kept in %s" % (failure, rollback),
+                max_bytes=5242880,
+                keep=3,
+            )
+            raise CloudChromeError(
+                "the restore failed (%s) and a desktop stack was still using "
+                "the live state, so the live state was left alone; the "
+                "previous state is kept in %s" % (failure, rollback)
+            ) from failure
         try:
             _rollback(layout, rollback)
-            restored = True
         except OSError as exc:
             logutil.append(
                 layout.supervisor_log,
@@ -782,14 +874,19 @@ def _recover(lifecycle, layout, rollback, swapped, was_running, failure):
                 max_bytes=5242880,
                 keep=3,
             )
+            raise CloudChromeError(
+                "the restore failed (%s) and the previous state could not be "
+                "put back (%s); it is kept in %s" % (failure, exc, rollback)
+            ) from failure
 
-    if was_running and not lifecycle.is_running():
-        # The desktop was running before the restore and is not running now,
-        # so it is started again. A desktop that is still running was never
-        # stopped, because the failure happened before that step.
+    # 3. Start the previous desktop again, when this transaction stopped
+    #    it, and check that it is usable. A stack that this transaction
+    #    never stopped is left exactly as it is: it is still running with
+    #    the data it had.
+    if state.original_stopped:
         try:
             lifecycle.start()
-        except CloudChromeError as exc:
+        except Exception as exc:  # noqa: BLE001 - the recovery reports it
             # The previous desktop could not be started either. The rollback
             # state is kept, so the previous profile, keyring and passphrase
             # stay recoverable.
@@ -798,43 +895,84 @@ def _recover(lifecycle, layout, rollback, swapped, was_running, failure):
                 "started either (%s); the previous state is kept in %s"
                 % (failure, exc, rollback)
             ) from failure
+        health = lifecycle.health()
+        if not health.get("healthy"):
+            problems = "; ".join(health.get("problems", [])) or "an unknown problem"
+            raise CloudChromeError(
+                "the restore failed (%s) and the previous desktop is not usable "
+                "either (%s); the previous state is kept in %s"
+                % (failure, problems, rollback)
+            ) from failure
+
+    # 4. A stack that was stopped before the restore is left stopped: the
+    #    previous desktop is only started again when this transaction
+    #    stopped it.
 
     if rollback is not None:
-        if restored:
-            # The previous state is back in place and the previous desktop
-            # runs again. The rollback copy is still kept, so that the data
-            # is recoverable even if the state that was put back is itself
-            # damaged.
-            logutil.append(
-                layout.supervisor_log,
-                "the restore failed (%s); the previous state was put back and "
-                "is also kept in %s" % (failure, rollback),
-                max_bytes=5242880,
-                keep=3,
-            )
-        else:
-            logutil.append(
-                layout.supervisor_log,
-                "the restore failed (%s) and the previous state could not be "
-                "put back; it is kept in %s" % (failure, rollback),
-                max_bytes=5242880,
-                keep=3,
-            )
+        logutil.append(
+            layout.supervisor_log,
+            "the restore failed (%s); the previous state was put back and is "
+            "also kept in %s" % (failure, rollback),
+            max_bytes=5242880,
+            keep=3,
+        )
+
+
+def _stop_stack(lifecycle):
+    """Stop the stack and confirm that it is gone.
+
+    Returns ``(stopped, reason)``. The confirmation matters: a stack that
+    is still up may be writing to the profile that is about to be replaced,
+    and the recovery must not replace it in that case.
+    """
+    try:
+        lifecycle.stop()
+    except Exception as exc:  # noqa: BLE001 - the recovery reports, it does not raise
+        return False, str(exc)
+    if lifecycle.is_running():
+        return False, "the desktop stack is still running after the stop"
+    return True, ""
 
 
 def _verify_installed(layout):
-    """Verify the ownership and the permissions of the installed state."""
-    for directory in (layout.chrome_dir, layout.keyring_dir):
-        if os.path.isdir(directory):
-            info = os.lstat(directory)
-            if info.st_uid != os.getuid():
-                raise InvalidStateError(
-                    "%s is owned by uid %d, expected %d"
-                    % (directory, info.st_uid, os.getuid())
-                )
-            os.chmod(directory, OWNER_ONLY_DIR)
-    if os.path.exists(layout.keyring_pass_file):
-        os.chmod(layout.keyring_pass_file, OWNER_ONLY_FILE)
+    """Verify the ownership and the permissions of the installed state.
+
+    The paths that are checked are the ones the runtime actually uses: the
+    Chrome profile, the GNOME Keyring store, and the keyring passphrase.
+
+    The legacy ``keyring`` directory is **not** accepted as a proof that
+    the live keyring store is safe: it holds nothing, so a check that
+    looked at it would pass while the store that Chrome actually uses was
+    exposed.
+    """
+    for directory in (layout.chrome_dir, layout.keyring_store_dir):
+        if not os.path.isdir(directory):
+            continue
+        info = os.lstat(directory)
+        if stat.S_ISLNK(info.st_mode):
+            raise InvalidStateError(
+                "%s is a symbolic link; refusing to use it" % directory
+            )
+        if info.st_uid != os.getuid():
+            raise InvalidStateError(
+                "%s is owned by uid %d, expected %d"
+                % (directory, info.st_uid, os.getuid())
+            )
+        os.chmod(directory, OWNER_ONLY_DIR)
+
+    passphrase = layout.keyring_pass_file
+    if os.path.exists(passphrase):
+        info = os.lstat(passphrase)
+        if stat.S_ISLNK(info.st_mode):
+            raise InvalidStateError(
+                "%s is a symbolic link; refusing to use it" % passphrase
+            )
+        if info.st_uid != os.getuid():
+            raise InvalidStateError(
+                "%s is owned by uid %d, expected %d"
+                % (passphrase, info.st_uid, os.getuid())
+            )
+        os.chmod(passphrase, OWNER_ONLY_FILE)
     return True
 
 

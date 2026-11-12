@@ -25,6 +25,12 @@ when something goes wrong.
 anyone who could read it would have the password for the desktop. It is
 rotated with `cloudchrome passwd` instead of being restored.
 
+The `keyring/...` members are the files of the **GNOME Keyring store**,
+the directory the keyring daemon is told to use. The restore installs them
+there, and the verification after the installation checks that directory —
+not the legacy `.cloudchrome/keyring` directory, which holds nothing and
+would therefore prove nothing about the live store.
+
 The age private key is **not** in the backup either. It lives in
 `.cloudchrome/keys/backup-identity.txt` with mode 0600 and it is the only
 thing that can decrypt the archive. Copy it somewhere safe if you want to be
@@ -89,10 +95,38 @@ the health check of the restored desktop:
 7. the restored Chrome and the Secret Service are checked;
 8. only then is the restore finalised and the rollback state disposed of.
 
-If any step fails, the previous profile, keyring and passphrase are put
-back, the previous desktop is started again, and the command exits non-zero.
-A failed restore never reports success and never leaves a partly installed
-state.
+If any step fails, the recovery runs in a fixed order, and the command
+exits non-zero. A failed restore never reports success and never leaves a
+partly installed state.
+
+## The recovery of a failed restore
+
+The recovery does not guess which stack is running. It records what the
+transaction itself did — whether the original stack was running, whether
+the transaction stopped it, and whether it tried to start the restored
+stack — and it acts on that record:
+
+1. **the restored stack is stopped**, and it is confirmed to be stopped,
+   before anything of the live state is touched. A restored desktop that is
+   still up may be writing to the profile that is about to be replaced. A
+   start that failed half way is cleaned up the same way: the stack it
+   left behind is stopped.
+2. **the previous profile, keyring and passphrase are put back** from the
+   retained rollback copy.
+3. **the previous desktop is started again, and its health is checked**,
+   when the transaction stopped it — that is, when it was running before
+   the restore. The health is verified, not assumed.
+4. **a stack that was stopped before the restore is left stopped.**
+
+A stack that the transaction did not start is never stopped. When the
+failure happens before the original stack was stopped, that stack is left
+exactly as it is: it is still running with the data it had.
+
+If the recovery itself fails — the restored stack cannot be stopped, the
+rollback does not complete, or the previous desktop cannot be started or
+is not usable — the command reports that, exits non-zero, and **keeps the
+rollback copy**, so the previous data stays recoverable. Nothing is
+discarded and no success is reported.
 
 **The rollback state is kept after a failure**, and its location is written
 to the supervisor's log, so the previous profile, keyring and passphrase stay

@@ -52,6 +52,8 @@ repository issues #1–#9; the final Phase 1.1 run is issue #9.
 | The VNC password is never in a backup | It is excluded from the payload explicitly | `lib/cloudchrome/backup.py` |
 | Every archive is treated as untrusted | Every member is validated before anything is extracted | `lib/cloudchrome/archive.py` |
 | The restore is transactional | The whole restore is one transaction; the previous state is put back when any step fails, and a failed restart is reported | `lib/cloudchrome/backup.py` |
+| The recovery stops the restored stack first | The restored stack is stopped and confirmed to be stopped before the previous profile is put back | `lib/cloudchrome/backup.py` |
+| The installed state is verified where it is used | The Chrome profile, the GNOME Keyring store and the passphrase file are checked for ownership and permissions | `lib/cloudchrome/backup.py` |
 | The pruning never leaves the last backup | The newest backup is always protected | `lib/cloudchrome/backup.py` |
 
 ### Changing the isolation policy
@@ -501,10 +503,52 @@ still there when the state that was put back turns out to be damaged. A
 failure in the middle of the installation is rolled back too, even when the
 live profile had already been moved aside.
 
+### 7.5 The recovery stops the restored stack before it rolls back
+
+The recovery does not infer which stack is running from `is_running()`. It
+records what the transaction did: whether the original stack was running,
+whether the transaction stopped it, and whether it attempted to start the
+restored stack.
+
+The order is fixed:
+
+1. the restored stack is stopped, and it is confirmed to be stopped, before
+   anything of the live state is touched — a restored desktop that is still
+   up may be writing to the profile that is about to be replaced. A start
+   that failed half way leaves a stack behind, and that stack is stopped
+   the same way;
+2. the previous profile, keyring and passphrase are put back from the
+   retained rollback copy;
+3. the previous desktop is started again and its health is **verified**,
+   when the transaction stopped it;
+4. a stack that was stopped before the restore is left stopped.
+
+A stack the transaction did not start is never stopped: a failure before
+the original stack was stopped leaves that stack running with its own data.
+
+When the recovery itself fails — the restored stack cannot be stopped, the
+rollback does not complete, or the previous desktop cannot be started or
+is not usable — the command reports the failure, exits non-zero and keeps
+the rollback copy. Nothing recoverable is discarded and no success is
+reported.
+
+### 7.6 The verification checks the paths that are used
+
+The ownership and the permissions of the installed state are verified
+against the paths the runtime actually uses: the Chrome profile, the
+**GNOME Keyring store** — the directory the keyring daemon is told to use —
+and the keyring passphrase file. A directory that belongs to somebody else
+is refused, a symbolic link is never followed, and the permissions of a
+directory that belongs to the runtime user are restored.
+
+The legacy `.cloudchrome/keyring` directory is **not** accepted as proof
+that the live keyring store is safe. It holds nothing, so a check that
+looked at it would pass while the store Chrome actually uses was exposed.
+
 A backup is taken with the stack stopped, because a profile that Chrome is
 still writing to is not a consistent snapshot.
 
-### 7.5 The pruning stays inside the managed area
+### 7.7 The pruning stays inside the managed area
 
 Only the files in the managed backup directory that carry the Cloud-Chrome
 backup name are considered. A symbolic link is never followed, a file outside
@@ -512,7 +556,7 @@ the directory is never touched, an explicit retention policy is required, the
 files that are about to be deleted are shown, and the newest backup is never
 pruned.
 
-### 7.6 The secret delivery
+### 7.8 The secret delivery
 
 `cloudchrome init` is silent and never prompts. The VNC password is shown
 only by the explicit interactive `cloudchrome passwd`, which refuses to print
@@ -520,14 +564,14 @@ when stdout is not a terminal — and then does not change the password either,
 because a password that was changed and cannot be shown would lock the user
 out of their own desktop.
 
-### 7.7 The Chrome argument policy
+### 7.9 The Chrome argument policy
 
 No user-supplied Chrome flags at all. The argument vector is assembled in one
 place and asserted against a forbidden-flag list before Chrome is launched:
 no `--no-sandbox`, no remote debugging, no plaintext password store and no
 user data directory other than the persistent one.
 
-### 7.8 The failure paths
+### 7.10 The failure paths
 
 The failures are injected with real failures rather than with hooks: a missing
 or invalid VNC password file, a keyring passphrase file with unsafe
@@ -536,7 +580,7 @@ delivered to the supervisor while the stack is still coming up. Each one must
 be refused, must leave the user's data intact and must not leave a stale PID
 file or a leftover process behind.
 
-### 7.9 Re-running the experiment
+### 7.11 Re-running the experiment
 
 Create a branch from `main` that adds a `postCreateCommand` invoking
 `tests/probe/runtime-probe.sh`, create a Codespace from that branch, and read

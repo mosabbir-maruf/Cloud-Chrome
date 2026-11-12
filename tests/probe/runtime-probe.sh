@@ -604,6 +604,10 @@ else
     # The failure is injected at the health check, which is the last step
     # before the restore is finalised. The previous profile, keyring and
     # passphrase must survive it.
+    #
+    # The order of the operations is measured as well: the restored stack
+    # has to be stopped before the previous state is put back, and the
+    # previous stack has to be started again and checked afterwards.
     python3 - <<'PY' 2>&1 | sed 's/^/    /'
 import os, sys
 sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
@@ -618,11 +622,17 @@ layout = Layout(config)
 
 
 class Failing:
-    """A lifecycle whose health check fails, like a broken desktop."""
+    """A lifecycle whose health check fails, like a broken desktop.
 
-    def __init__(self):
-        self.running = True
+    The first health call is the one of the restored desktop and fails.
+    The second one is the check of the previous desktop, which has to
+    pass: the recovery verifies it instead of assuming it.
+    """
+
+    def __init__(self, running=True):
+        self.running = running
         self.events = []
+        self.health_calls = 0
 
     def is_running(self):
         return self.running
@@ -638,7 +648,10 @@ class Failing:
 
     def health(self):
         self.events.append("health")
-        return {"healthy": False, "problems": ["the injected failure"]}
+        self.health_calls += 1
+        if self.health_calls == 1:
+            return {"healthy": False, "problems": ["the injected failure"]}
+        return {"healthy": True, "problems": []}
 
 
 def profile_marker():
@@ -659,38 +672,67 @@ backups = sorted(
 )
 source = backups[-1]
 
-with open(os.path.join(layout.chrome_dir, "Default", "CloudChromeProbeMarker"), "w",
-          encoding="utf-8") as handle:
-    handle.write("the-state-before-the-failed-restore")
+original_rollback = backup_module._rollback
 
-before_marker = profile_marker()
-before_pass = passphrase()
 
-try:
-    backup_module.restore_transaction(
-        Failing(), layout, config, source=source, assume_yes=True)
-    print("outcome=accepted")
-except CloudChromeError as exc:
-    print("outcome=refused")
-    print("reason=%s" % str(exc)[:160])
-except Exception as exc:  # noqa: BLE001
-    print("outcome=refused")
-    print("reason=%s" % str(exc)[:160])
+def recording_rollback(layout_arg, rollback_arg):
+    """Make the rollback visible in the recorded order."""
+    lifecycle.events.append("rollback")
+    return original_rollback(layout_arg, rollback_arg)
 
-print("profile_preserved=%s" % (profile_marker() == before_marker))
-print("passphrase_preserved=%s" % (passphrase() == before_pass))
 
-# The rollback state is kept after the failure, and it still holds the
-# previous data.
-kept = sorted(
-    name for name in os.listdir(layout.persist_dir)
-    if name.startswith(".cloudchrome-rollback.")
-)
-print("rollback_states_kept=%d" % len(kept))
-for name in kept:
-    saved = os.path.join(layout.persist_dir, name, "chrome")
-    print("rollback_holds_the_previous_profile=%s"
-          % os.path.isfile(os.path.join(saved, "Default", "CloudChromeProbeMarker")))
+for scenario, running, expected in (
+    # The stack was running: it has to be stopped, the previous state put
+    # back, and the stack started again and checked.
+    ("the stack was running", True,
+     "stop,start,health,stop,rollback,start,health"),
+    # The stack was stopped: it has to be left stopped.
+    ("the stack was stopped", False,
+     "start,health,stop,rollback"),
+):
+    print("--- the failure with %s ---" % scenario)
+    with open(os.path.join(layout.chrome_dir, "Default", "CloudChromeProbeMarker"), "w",
+              encoding="utf-8") as handle:
+        handle.write("the-state-before-the-failed-restore")
+
+    before_marker = profile_marker()
+    before_pass = passphrase()
+
+    lifecycle = Failing(running=running)
+    backup_module._rollback = recording_rollback
+    try:
+        backup_module.restore_transaction(
+            lifecycle, layout, config, source=source, assume_yes=True)
+        print("outcome=accepted")
+    except CloudChromeError as exc:
+        print("outcome=refused")
+        print("reason=%s" % str(exc)[:160])
+    except Exception as exc:  # noqa: BLE001
+        print("outcome=refused")
+        print("reason=%s" % str(exc)[:160])
+    finally:
+        backup_module._rollback = original_rollback
+
+    sequence = ",".join(lifecycle.events)
+    print("sequence=%s" % sequence)
+    print("sequence_is_correct=%s" % (sequence == expected))
+    print("the_stack_is_running_afterwards=%s" % lifecycle.running)
+    print("profile_preserved=%s" % (profile_marker() == before_marker))
+    print("passphrase_preserved=%s" % (passphrase() == before_pass))
+
+    # The rollback state is kept after the failure, and it still holds the
+    # previous data.
+    kept = sorted(
+        name for name in os.listdir(layout.persist_dir)
+        if name.startswith(".cloudchrome-rollback.")
+    )
+    holding = 0
+    for name in kept:
+        saved = os.path.join(layout.persist_dir, name, "chrome")
+        if os.path.isfile(os.path.join(saved, "Default", "CloudChromeProbeMarker")):
+            holding += 1
+    print("rollback_states_kept=%d" % len(kept))
+    print("rollback_states_holding_the_previous_profile=%d" % holding)
 PY
 
     # --- the rollback state is kept after the failure ---------------------

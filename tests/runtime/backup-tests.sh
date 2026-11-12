@@ -399,12 +399,21 @@ layout = Layout(config)
 
 
 class Failing:
-    """A lifecycle that fails at a chosen step."""
+    """A lifecycle that fails at a chosen step.
 
-    def __init__(self, running=True, fail_at=None):
+    It records every operation in the order it happened. The recovery of
+    a failed restore is about that order: the restored stack has to be
+    stopped before the previous state is put back, and the previous stack
+    has to be started again afterwards.
+    """
+
+    def __init__(self, running=True, fail_at=None, partial_start=False):
         self.running = running
         self.fail_at = fail_at
+        self.partial_start = partial_start
         self.events = []
+        self.health_calls = 0
+        self.start_calls = 0
 
     def is_running(self):
         return self.running
@@ -416,13 +425,18 @@ class Failing:
 
     def start(self, if_needed=False, timeout=180):
         self.events.append("start")
-        if self.fail_at == "start":
+        self.start_calls += 1
+        if self.fail_at == "start" and self.start_calls == 1:
+            if self.partial_start:
+                # The start failed half way: a stack is still there.
+                self.running = True
             raise CloudChromeError("the supervisor did not start")
         self.running = True
 
     def health(self):
         self.events.append("health")
-        if self.fail_at == "health":
+        self.health_calls += 1
+        if self.fail_at == "health" and self.health_calls == 1:
             return {"healthy": False, "problems": ["Chrome is not running"]}
         return {"healthy": True, "problems": []}
 
@@ -457,7 +471,34 @@ backups = sorted(
 )
 source = backups[-1]
 
-for fail_at in ("install", "verify", "start", "health"):
+# A file that cannot be decrypted at all: the restore fails before the
+# original stack is stopped.
+corrupt = os.path.join(tempfile.gettempdir(), "cloudchrome-corrupt.tar.gz.age")
+with open(corrupt, "wb") as handle:
+    handle.write(b"this is not an age file")
+
+CASES = (
+    # name, running before, failure, expected sequence
+    ("install", True, None, "stop,rollback,start,health"),
+    ("verify", True, None, "stop,rollback,start,health"),
+    ("start", True, "start", "stop,start,stop,rollback,start,health"),
+    ("health", True, "health", "stop,start,health,stop,rollback,start,health"),
+    ("stopped", False, "health", "start,health,stop,rollback"),
+    ("early", True, None, ""),
+)
+
+original_swap = backup_module._swap_in
+original_verify = backup_module._verify_installed
+original_rollback = backup_module._rollback
+
+
+def recording_rollback(layout_arg, rollback_arg):
+    """Make the rollback visible in the recorded order."""
+    lifecycle.events.append("rollback")
+    return original_rollback(layout_arg, rollback_arg)
+
+
+for fail_at, running, failure, expected in CASES:
     # The state is marked, so a rollback can be observed.
     with open(os.path.join(layout.chrome_dir, "Default", "Cookies"), "w",
               encoding="utf-8") as handle:
@@ -465,8 +506,9 @@ for fail_at in ("install", "verify", "start", "health"):
     before_marker = read_or_report(marker)
     before_pass = read_or_report(passphrase)
 
-    original_swap = backup_module._swap_in
-    original_verify = backup_module._verify_installed
+    backup_module._swap_in = original_swap
+    backup_module._verify_installed = original_verify
+    backup_module._rollback = recording_rollback
 
     if fail_at == "install":
         def broken_swap(layout_arg, staging, rollback):
@@ -478,23 +520,30 @@ for fail_at in ("install", "verify", "start", "health"):
             raise OSError("the ownership check failed")
         backup_module._verify_installed = broken_verify
 
-    lifecycle = Failing(running=True, fail_at=fail_at if fail_at in ("start", "health") else None)
+    lifecycle = Failing(running=running, fail_at=failure,
+                        partial_start=(fail_at == "start"))
+    case_source = corrupt if fail_at == "early" else source
     try:
         backup_module.restore_transaction(
-            lifecycle, layout, config, source=source, assume_yes=True)
+            lifecycle, layout, config, source=case_source, assume_yes=True)
         outcome = "accepted"
     except Exception as exc:
         outcome = "refused"
-        reason = str(exc)[:120]
 
     backup_module._swap_in = original_swap
     backup_module._verify_installed = original_verify
+    backup_module._rollback = original_rollback
 
     after_marker = read_or_report(marker)
     after_pass = read_or_report(passphrase)
-    print("CASE=%s outcome=%s marker_preserved=%s passphrase_preserved=%s"
-          % (fail_at, outcome, after_marker == before_marker,
-             after_pass == before_pass))
+    kept = sorted(name for name in os.listdir(layout.persist_dir)
+                  if name.startswith(".cloudchrome-rollback."))
+    sequence = ",".join(lifecycle.events)
+    print("CASE=%s outcome=%s sequence=%s sequence_ok=%s running=%s "
+          "marker_preserved=%s passphrase_preserved=%s rollback_kept=%d"
+          % (fail_at, outcome, sequence, sequence == expected,
+             lifecycle.running, after_marker == before_marker,
+             after_pass == before_pass, len(kept)))
 PY
 
 # Every failure case is measured, and every case is reported on one line.
@@ -502,7 +551,7 @@ PY
 # The number of cases is checked as well: a case that the measurement
 # script never reached would otherwise be silently skipped, and the suite
 # would pass without ever exercising it.
-expected_cases=4
+expected_cases=6
 measured=$(grep -c '^CASE=' "$WORK/failures.txt" 2>/dev/null || echo 0)
 if [ "$measured" -eq "$expected_cases" ]; then
     pass "every failure case was measured" "$measured of $expected_cases"
@@ -518,11 +567,25 @@ while read -r line; do
             case_name=$(printf '%s' "$line" | sed 's/^CASE=//; s/ .*//')
             outcome=$(printf '%s' "$line" | sed -n 's/.*outcome=//; s/ .*//p')
             marker_state=$(printf '%s' "$line" | sed -n 's/.*marker_preserved=//; s/ .*//p')
-            pass_state=$(printf '%s' "$line" | sed -n 's/.*passphrase_preserved=//p')
+            pass_state=$(printf '%s' "$line" | sed -n 's/.*passphrase_preserved=//; s/ .*//p')
+            sequence=$(printf '%s' "$line" | sed -n 's/.*sequence=//; s/ .*//p')
+            sequence_ok=$(printf '%s' "$line" | sed -n 's/.*sequence_ok=//; s/ .*//p')
+            running=$(printf '%s' "$line" | sed -n 's/.*running=//; s/ .*//p')
+            rollback_kept=$(printf '%s' "$line" | sed -n 's/.*rollback_kept=//p')
             if [ "$outcome" = "refused" ]; then
                 pass "the failure at '$case_name' is refused"
             else
                 fail "the failure at '$case_name' is refused" "$outcome"
+            fi
+            if [ "$sequence_ok" = "True" ]; then
+                pass "the lifecycle order at '$case_name' is correct" "$sequence"
+            else
+                fail "the lifecycle order at '$case_name' is correct" "$sequence"
+            fi
+            if [ "$running" = "True" ] || [ "$running" = "False" ]; then
+                pass "the final stack state at '$case_name' is measured" "$running"
+            else
+                fail "the final stack state at '$case_name' is measured" "$running"
             fi
             if [ "$marker_state" = "True" ]; then
                 pass "the previous profile survives the failure at '$case_name'"
@@ -536,6 +599,7 @@ while read -r line; do
                 fail "the previous passphrase survives the failure at '$case_name'" \
                     "$pass_state"
             fi
+            note "the rollback state kept at '$case_name'" "$rollback_kept"
             ;;
     esac
 done < "$WORK/failures.txt"

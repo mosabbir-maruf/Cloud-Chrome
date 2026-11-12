@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "lib"))
 
@@ -37,17 +38,38 @@ needs_age = unittest.skipUnless(HAS_AGE, "the age tools are not installed")
 
 
 class FakeLifecycle:
-    """A desktop stack lifecycle that can be told to fail.
+    """A desktop stack lifecycle that records the order of the operations.
 
-    It records what it was asked to do, so a test can see that the restore
-    stopped the stack, started it again and checked its health.
+    The recovery of a failed restore is about the *order* of the
+    operations: the restored stack has to be stopped before the previous
+    state is put back, and the previous stack has to be started again
+    afterwards. The test therefore measures the sequence, not only the
+    files afterwards.
     """
 
-    def __init__(self, running=False, fail_start=False, fail_health=False):
+    def __init__(
+        self,
+        running=False,
+        fail_start=False,
+        fail_health=False,
+        fail_health_at=None,
+        fail_start_at=None,
+        partial_start=False,
+    ):
         self.running = running
         self.fail_start = fail_start
         self.fail_health = fail_health
+        # The health call, counted from one, that fails. None means that
+        # every health call passes.
+        self.fail_health_at = 1 if fail_health else fail_health_at
+        # The start call, counted from one, that fails. None means that
+        # every start call succeeds.
+        self.fail_start_at = 1 if fail_start else fail_start_at
+        # A start that fails half way leaves a stack behind.
+        self.partial_start = partial_start
         self.events = []
+        self.health_calls = 0
+        self.start_calls = 0
 
     def is_running(self):
         return self.running
@@ -60,14 +82,20 @@ class FakeLifecycle:
 
     def start(self, if_needed=False, timeout=180):
         self.events.append("start")
-        if self.fail_start:
+        self.start_calls += 1
+        if self.fail_start_at == self.start_calls:
+            if self.partial_start:
+                # The start failed half way: a stack is still there, and the
+                # recovery has to clean it up.
+                self.running = True
             raise CloudChromeError("the supervisor did not start")
         self.running = True
 
     def health(self):
         self.events.append("health")
-        if self.fail_health:
-            return {"healthy": False, "problems": ["Chrome is not running"]}
+        self.health_calls += 1
+        if self.fail_health_at == self.health_calls:
+            return {"healthy": False, "problems": ["the desktop is not usable"]}
         return {"healthy": True, "problems": []}
 
 
@@ -246,9 +274,8 @@ class ArchiveLimitTest(unittest.TestCase):
             archive_module.validate_archive(path, limits=limits)
 
 
-@needs_age
-class RestoreTransactionTest(StateCase):
-    """The restore is one transaction, and every failure rolls back."""
+class BackupFixture(StateCase):
+    """A state with a real encrypted backup the restore can read."""
 
     def setUp(self):
         super().setUp()
@@ -298,6 +325,36 @@ class RestoreTransactionTest(StateCase):
     def _passphrase(self):
         with open(self.layout.keyring_pass_file, "r", encoding="utf-8") as handle:
             return handle.read()
+
+    def _rollback_copies(self):
+        """The rollback directories that are kept."""
+        return sorted(
+            name
+            for name in os.listdir(self.layout.persist_dir)
+            if name.startswith(".cloudchrome-rollback.")
+        )
+
+    def _record_the_rollback(self, lifecycle):
+        """Make the rollback visible in the recorded order.
+
+        The recovery has to stop the restored stack *before* the previous
+        state is put back, and the rollback is a file operation that the
+        lifecycle does not know about. Recording it in the same sequence
+        is what makes the order measurable.
+        """
+        original = backup_module._rollback
+
+        def recording(layout_arg, rollback_arg):
+            lifecycle.events.append("rollback")
+            return original(layout_arg, rollback_arg)
+
+        backup_module._rollback = recording
+        self.addCleanup(setattr, backup_module, "_rollback", original)
+
+
+@needs_age
+class RestoreTransactionTest(BackupFixture):
+    """The restore is one transaction, and every failure rolls back."""
 
     def test_a_successful_restore_replaces_the_state(self):
         lifecycle = FakeLifecycle(running=True)
@@ -443,6 +500,179 @@ class RestoreTransactionTest(StateCase):
         self.assertEqual(self._passphrase(), before)
 
 
+@needs_age
+class RestoreRecoveryTest(BackupFixture):
+    """The recovery of a failed restore, in the order it happens.
+
+    The recovery has to stop the restored stack before it puts the previous
+    state back: a restored desktop that is still up may be writing to the
+    profile that is about to be replaced. The tests therefore measure the
+    *order* of the operations and not only the files afterwards.
+    """
+
+    def _restore(self, lifecycle, source=None):
+        return backup_module.restore_transaction(
+            lifecycle,
+            self.layout,
+            self.config,
+            source=source or self.source,
+            assume_yes=True,
+        )
+
+    def test_the_health_failure_stops_the_restored_stack_before_the_rollback(self):
+        # The original stack is running, the restore starts the restored
+        # stack, its health check fails. The recovery has to stop the
+        # restored stack, put the previous state back, and start the
+        # previous stack again.
+        before = self._profile_marker()
+        lifecycle = FakeLifecycle(running=True, fail_health_at=1)
+        self._record_the_rollback(lifecycle)
+
+        with self.assertRaises(CloudChromeError):
+            self._restore(lifecycle)
+
+        self.assertEqual(
+            lifecycle.events,
+            ["stop", "start", "health", "stop", "rollback", "start", "health"],
+            "the restored stack has to be stopped before the rollback",
+        )
+        # The previous profile is back, and the previous stack runs again.
+        self.assertEqual(self._profile_marker(), before)
+        self.assertTrue(lifecycle.running)
+        # The rollback copy is kept, with the previous data in it.
+        kept = self._rollback_copies()
+        self.assertEqual(len(kept), 1)
+        saved = os.path.join(self.layout.persist_dir, kept[0], "chrome")
+        self.assertTrue(
+            os.path.isfile(os.path.join(saved, "Default", "Cookies")),
+            "the kept rollback state has to hold the previous profile",
+        )
+
+    def test_the_previous_stack_is_healthy_after_the_recovery(self):
+        # The health of the previous stack is checked, not assumed.
+        lifecycle = FakeLifecycle(running=True, fail_health_at=1)
+        self._record_the_rollback(lifecycle)
+
+        with self.assertRaises(CloudChromeError):
+            self._restore(lifecycle)
+
+        # The first health call is the restored stack's and fails, the
+        # second one is the previous stack's and passes.
+        self.assertEqual(lifecycle.health_calls, 2)
+
+    def test_a_start_that_fails_partly_leaves_nothing_running(self):
+        # A start that fails half way may have left a stack behind. The
+        # recovery has to detect it and stop it before the rollback.
+        before = self._profile_marker()
+        lifecycle = FakeLifecycle(
+            running=True, fail_start_at=1, partial_start=True
+        )
+        self._record_the_rollback(lifecycle)
+
+        with self.assertRaises(CloudChromeError):
+            self._restore(lifecycle)
+
+        self.assertEqual(
+            lifecycle.events,
+            ["stop", "start", "stop", "rollback", "start", "health"],
+            "a partly started stack has to be stopped before the rollback",
+        )
+        self.assertEqual(self._profile_marker(), before)
+        self.assertTrue(lifecycle.running)
+        self.assertEqual(len(self._rollback_copies()), 1)
+
+    def test_a_stopped_stack_is_left_stopped_after_a_failed_restore(self):
+        # The stack was stopped before the restore. The restore starts the
+        # restored stack, its health check fails, and the stack has to be
+        # left stopped: the previous stack was not running either.
+        lifecycle = FakeLifecycle(running=False, fail_health_at=1)
+        self._record_the_rollback(lifecycle)
+
+        with self.assertRaises(CloudChromeError):
+            self._restore(lifecycle)
+
+        self.assertEqual(
+            lifecycle.events,
+            ["start", "health", "stop", "rollback"],
+            "a stack that was stopped before the restore has to be left stopped",
+        )
+        self.assertFalse(lifecycle.running)
+        self.assertEqual(len(self._rollback_copies()), 1)
+
+    def test_a_failure_before_the_stop_does_not_stop_the_original_stack(self):
+        # The archive cannot be decrypted, so the failure happens before
+        # the original stack is stopped. The original stack must not be
+        # touched: it is still running with its own data.
+        corrupt = os.path.join(self.work, "corrupt.tar.gz.age")
+        with open(corrupt, "wb") as handle:
+            handle.write(b"this is not an age file")
+        lifecycle = FakeLifecycle(running=True)
+        self._record_the_rollback(lifecycle)
+
+        with self.assertRaises(CloudChromeError):
+            self._restore(lifecycle, source=corrupt)
+
+        self.assertEqual(
+            lifecycle.events,
+            [],
+            "a failure before the stop must not stop the original stack",
+        )
+        self.assertTrue(lifecycle.running)
+        self.assertEqual(self._rollback_copies(), [])
+
+    def test_the_recovery_reports_the_failure_and_never_reports_success(self):
+        # A failed restore raises, so the command exits non-zero and never
+        # prints a success message.
+        lifecycle = FakeLifecycle(running=True, fail_health_at=1)
+
+        with self.assertRaises(CloudChromeError) as caught:
+            self._restore(lifecycle)
+
+        self.assertIn("the restored desktop is not usable", str(caught.exception))
+
+    def test_a_rollback_that_fails_keeps_the_previous_state(self):
+        # When the recovery cannot put the previous state back, the error
+        # says so and the rollback copy is kept.
+        original = backup_module._rollback
+
+        def broken(layout_arg, rollback_arg):
+            raise OSError("the rollback failed")
+
+        backup_module._rollback = broken
+        self.addCleanup(setattr, backup_module, "_rollback", original)
+
+        lifecycle = FakeLifecycle(running=True, fail_health_at=1)
+
+        with self.assertRaises(CloudChromeError) as caught:
+            self._restore(lifecycle)
+
+        self.assertIn("could not be put back", str(caught.exception))
+        self.assertEqual(len(self._rollback_copies()), 1)
+
+    def test_a_previous_stack_that_does_not_start_keeps_the_rollback(self):
+        # The previous stack cannot be started either. The error says so,
+        # and the previous data stays recoverable.
+        lifecycle = FakeLifecycle(running=True, fail_health_at=1)
+        self._record_the_rollback(lifecycle)
+        # The second start is the one of the previous stack.
+        original_start = lifecycle.start
+        calls = {"count": 0}
+
+        def failing_start(if_needed=False, timeout=180):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise CloudChromeError("the supervisor did not start")
+            return original_start(if_needed=if_needed, timeout=timeout)
+
+        lifecycle.start = failing_start
+
+        with self.assertRaises(CloudChromeError) as caught:
+            self._restore(lifecycle)
+
+        self.assertIn("could not be started", str(caught.exception))
+        self.assertEqual(len(self._rollback_copies()), 1)
+
+
 class PayloadTest(StateCase):
     """What goes into a backup, and what does not."""
 
@@ -480,12 +710,40 @@ class PayloadTest(StateCase):
         self.assertIn("keyring.pass", names)
 
 
+def _stat_with_uid(info, uid):
+    """A stat result with a different owner."""
+    fields = list(info)
+    fields[4] = uid
+    return os.stat_result(tuple(fields))
+
+
 class RestoreVerificationTest(StateCase):
-    """The installed state is verified, and a failure rolls it back."""
+    """The installed state is verified against the paths that are used.
+
+    The verification has to look at the directory the keyring daemon
+    actually uses, and not at the legacy directory that holds nothing.
+    """
 
     def setUp(self):
         super().setUp()
         self.make_profile()
+
+    def _with_a_foreign_owner(self, path):
+        """Make the verification see *path* as owned by somebody else.
+
+        A test cannot change the owner of a directory without root, so the
+        stat result is made to report a different owner instead.
+        """
+        real_lstat = os.lstat
+        target = os.path.abspath(path)
+
+        def fake_lstat(entry):
+            info = real_lstat(entry)
+            if os.path.abspath(entry) == target:
+                return _stat_with_uid(info, info.st_uid + 1)
+            return info
+
+        return mock.patch("os.lstat", fake_lstat)
 
     def test_the_verification_accepts_a_correct_state(self):
         self.assertTrue(backup_module._verify_installed(self.layout))
@@ -496,6 +754,73 @@ class RestoreVerificationTest(StateCase):
         # through the code path that reports it.
         info = os.lstat(self.layout.chrome_dir)
         self.assertEqual(info.st_uid, os.getuid())
+
+    def test_the_keyring_store_directory_is_the_one_that_is_checked(self):
+        # The verification has to look at the directory the keyring daemon
+        # uses. The legacy directory holds nothing, so a check that looked
+        # at it would prove nothing about the live store.
+        checked = []
+        real_lstat = os.lstat
+
+        def recording_lstat(entry):
+            checked.append(os.path.abspath(entry))
+            return real_lstat(entry)
+
+        with mock.patch("os.lstat", recording_lstat):
+            self.assertTrue(backup_module._verify_installed(self.layout))
+
+        self.assertIn(os.path.abspath(self.layout.keyring_store_dir), checked)
+        self.assertNotIn(os.path.abspath(self.layout.keyring_dir), checked)
+
+    def test_a_foreign_owner_on_the_keyring_store_is_refused(self):
+        with self._with_a_foreign_owner(self.layout.keyring_store_dir):
+            with self.assertRaises(InvalidStateError) as caught:
+                backup_module._verify_installed(self.layout)
+        self.assertIn(self.layout.keyring_store_dir, str(caught.exception))
+
+    def test_the_legacy_keyring_directory_cannot_hide_a_bad_store(self):
+        # The legacy directory is private and owned by the runtime user, so
+        # it would satisfy a check that looked at it. The real store is
+        # invalid here, and the verification has to refuse it.
+        legacy = self.layout.keyring_dir
+        os.chmod(legacy, 0o700)
+        info = os.lstat(legacy)
+        self.assertEqual(info.st_uid, os.getuid())
+
+        with self._with_a_foreign_owner(self.layout.keyring_store_dir):
+            with self.assertRaises(InvalidStateError):
+                backup_module._verify_installed(self.layout)
+
+    def test_the_keyring_store_permissions_are_corrected(self):
+        # The store belongs to the runtime user, so the runtime may restore
+        # the permissions it is supposed to have.
+        os.chmod(self.layout.keyring_store_dir, 0o755)
+        backup_module._verify_installed(self.layout)
+        mode = stat.S_IMODE(os.stat(self.layout.keyring_store_dir).st_mode)
+        self.assertEqual(mode, 0o700)
+
+    def test_the_keyring_store_is_not_a_symbolic_link(self):
+        # A link is never followed: the chmod would otherwise change the
+        # mode of whatever the link points at.
+        store = self.layout.keyring_store_dir
+        elsewhere = os.path.join(self.work, "elsewhere")
+        os.makedirs(elsewhere, exist_ok=True)
+        shutil.rmtree(store)
+        os.symlink(elsewhere, store)
+        with self.assertRaises(InvalidStateError):
+            backup_module._verify_installed(self.layout)
+
+    def test_a_foreign_owner_on_the_passphrase_is_refused(self):
+        with self._with_a_foreign_owner(self.layout.keyring_pass_file):
+            with self.assertRaises(InvalidStateError) as caught:
+                backup_module._verify_installed(self.layout)
+        self.assertIn(self.layout.keyring_pass_file, str(caught.exception))
+
+    def test_the_passphrase_permissions_are_corrected(self):
+        os.chmod(self.layout.keyring_pass_file, 0o644)
+        backup_module._verify_installed(self.layout)
+        mode = stat.S_IMODE(os.stat(self.layout.keyring_pass_file).st_mode)
+        self.assertEqual(mode, 0o600)
 
 
 if __name__ == "__main__":
