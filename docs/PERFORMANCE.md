@@ -93,6 +93,12 @@ below is the runtime of the container.
 | The image | 662 223 923 bytes uncompressed (631 MiB) |
 | The build duration | 104 s on the CI runner, with the package cache warm |
 
+The image size and the build duration are the ones of the release
+candidate CI run. A rebuild of the same image differs by about a
+kilobyte, and the build takes between 104 s and 136 s on the runners,
+depending on how warm their package cache is; neither is a property of the
+runtime.
+
 The machine type is not reported inside the container, so it was taken
 from the request that created the Codespace. The measured CPU count and
 the measured memory match it.
