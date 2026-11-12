@@ -36,6 +36,14 @@ The age private key is **not** in the backup either. It lives in
 thing that can decrypt the archive. Copy it somewhere safe if you want to be
 able to restore the backup on another machine.
 
+**Keep the identity outside the Codespace.** The identity and the backups
+live in the same persistent volume, so deleting the Codespace takes both
+of them. A backup without its identity is a file that nobody can read:
+the age format is authenticated, and the wrong identity is refused. Before
+you delete a Codespace, copy `.cloudchrome/keys/backup-identity.txt` and
+the `.cloudchrome/backups/` directory somewhere else. Without that copy,
+the recovery is impossible.
+
 ---
 
 ## Creating a backup

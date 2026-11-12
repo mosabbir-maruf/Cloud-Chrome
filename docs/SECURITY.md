@@ -12,11 +12,20 @@ carried forward to later phases.
 - Backup, restore and pruning: `docs/BACKUP.md`.
 - Runtime implementation: `bin/cloudchrome` and `lib/cloudchrome/`.
 
-**Evidence status:** every measurement below was taken on **2026-11-10/11** either on a
-GitHub-hosted CI runner or inside a real GitHub Codespaces dev container
+**Evidence status:** every measurement below was taken on **2026-11-10 to 2026-11-12**
+either on a GitHub-hosted CI runner or inside a real GitHub Codespaces dev container
 (region `CentralIndia`, machine `basicLinux32gb` = 2 cores / 8 GB RAM / 32 GB storage,
-kernel `6.8.0-1064-azure`, Ubuntu 24.04.3 LTS). Raw transcripts are published as
-repository issues #1–#9; the final Phase 1.1 run is issue #9.
+kernel `6.8.0-1070-azure`, Ubuntu 24.04.3 LTS). The raw transcripts are published as
+repository issues. The current ones are:
+
+| Evidence | Issue |
+|---|---|
+| The runtime of the desktop stack, in a Codespace | [#27](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/27) |
+| The performance of the desktop stack, in a Codespace | [#36](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/36) |
+
+The earlier issues (#1 to #26) are the history of the measurement and are
+kept for the record. They describe earlier states of the code, and a
+number that was true then is not a statement about the current build.
 
 ---
 
@@ -26,7 +35,7 @@ repository issues #1–#9; the final Phase 1.1 run is issue #9.
 |---|---|---|
 | Chrome Sync disabled | Managed policy `SyncDisabled: true` | `/etc/opt/chrome/policies/managed/cloudchrome.json` |
 | Browser-level Google account disabled | Managed policy `BrowserSignin: 0` | same file |
-| Google **website** sign-in remains available | Not a browser-signin control; verified in the Phase 2 acceptance test | — |
+| Google **website** sign-in is not blocked by the policy | The managed policy controls the browser-level account, not a website sign-in. **Not verified automatically**: it is a pending human acceptance item | — |
 | Policy file is root-owned and unwritable | `chown root:root`, `chmod 0644`; asserted at build time and in CI, including that the runtime user can neither write the file **nor** replace it | `.devcontainer/Dockerfile`, `ci.yml` |
 | **No blanket passwordless root** | `/etc/sudoers.d/vscode` removed; `sudo -n true` must fail | `.devcontainer/Dockerfile` |
 | Container runs as a non-root user | `USER vscode`; verified in CI (`user=vscode uid=1000`) | `.devcontainer/Dockerfile` |
@@ -348,7 +357,8 @@ variable.
 
 A real GitHub Codespaces dev container (`basicLinux32gb`, Ubuntu 24.04.3 LTS,
 kernel `6.8.0-1070-azure`) was created from a branch that runs the runtime
-probe. The raw transcript is published as repository issue #19.
+probe. The raw transcript is published as repository issue
+[#27](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/27).
 
 | Measurement | Result |
 |---|---|
@@ -365,6 +375,14 @@ probe. The raw transcript is published as repository issue #19.
 | The diagnostics | **all checks pass** (`doctor` exits 0) |
 | The secrets | the keyring passphrase is absent from the logs, from the process table and from every command's output |
 | The host-level limitation | `/proc/sys/abi/ia32_emulation` is not exposed; the `int 0x80` compatibility path stays reachable |
+
+**What this table does and does not prove.** Everything in it is measured
+by a script: the ports, the processes, the sandbox state, the secrets and
+the backup. A successful HTTP response from the noVNC client says that
+the client is served; it does not say that a browser renders the desktop,
+and a rejected wrong password says that the authentication works; it does
+not say that a human saw the screen. Those two need a person, and they
+are listed as pending in `docs/ACCEPTANCE.md`.
 
 ### 4.9.1 The failures that were found this way
 

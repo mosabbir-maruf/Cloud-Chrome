@@ -175,18 +175,31 @@ Everything the runtime writes is under one directory in the workspace:
 
 ```
 .cloudchrome/
-  chrome/          the persistent Chrome profile
-  keyring/         the GNOME Keyring data
-  keyring.pass     the keyring unlock passphrase        (mode 0600)
-  vnc.pass         the TigerVNC password file           (mode 0600)
-  logs/            the runtime logs
-  run/             pid files, locks, sockets
-  backups/         the encrypted backups
-  keys/            the age identity and recipient
+  chrome/            the persistent Chrome profile
+  xdg/keyrings/      the GNOME Keyring data
+  xdg/               the XDG data directory
+  cache/             the XDG cache directory
+  config/            the XDG configuration directory
+  keyring.pass       the keyring unlock passphrase        (mode 0600)
+  vnc.pass           the TigerVNC password file           (mode 0600)
+  logs/              the runtime logs
+  run/               pid files, locks, sockets
+  run/xdg/           the XDG runtime directory
+  backups/           the encrypted backups
+  keys/              the age identity and recipient
 ```
 
-The workspace is the Codespaces persistent volume, so a rebuild keeps the
-profile, the keyring and the backups.
+**The GNOME Keyring data is in `xdg/keyrings/`.** That is the directory
+the keyring daemon is told to use, and it is where the daemon writes the
+login keyring and the user keystore. The legacy `keyring/` directory
+beside it holds nothing; it is not where the keyring lives, and the
+runtime does not treat it as proof that the live store is safe.
+
+The workspace is the Codespaces persistent volume, so the profile, the
+keyring and the backups are there when the container is replaced. Whether a
+**rebuild** of the image keeps them depends on the Codespaces volume
+surviving that rebuild; that has not been verified end to end, so it is
+listed as a pending acceptance item in `docs/ACCEPTANCE.md`.
 
 The directory is listed in `.gitignore` and excluded from the Docker build
 context, so no personal data ever reaches Git or an image.
@@ -216,6 +229,16 @@ path to the desktop.
 The browser reaches the desktop through the forwarded port 6080. In a
 Codespace the port panel opens it; `cloudchrome url` prints the same URL.
 
+**Keep the forwarded port private.** A forwarded Codespaces port is
+reachable by the account that owns the Codespace and by nobody else, and
+it is never published to the internet. The noVNC client asks for the VNC
+password in any case, so a forwarded port that is made public is a
+password on the public internet.
+
+The raw RFB port stays on the loopback interface. It is not forwarded, and
+`Xvnc` is started with `-localhost`, so it is not reachable from the
+container's network namespace either.
+
 ---
 
 ## The Chrome profile
@@ -224,8 +247,12 @@ The browser profile lives in `.cloudchrome/chrome/`, which is inside the
 Codespaces persistent volume. It therefore survives:
 
 * a stop and a start,
-* a restart of the container,
-* a rebuild of the image.
+* a restart of the container.
+
+It is on the persistent volume, so a rebuild of the image keeps it as
+well. That last one is the design, not a measurement: no rebuild has been
+performed end to end, and it is a pending item in the acceptance
+checklist.
 
 Cookies, the browsing history, the preferences, the extensions and the
 signed-in website sessions are all part of it, so a session that was signed
@@ -233,6 +260,15 @@ in on one day is still signed in the next.
 
 Only one Chrome may use the profile at a time. Chrome's own profile lock
 takes care of that, and the supervisor only ever starts one browser.
+
+**The browser-level Google account is turned off.** The managed policy
+sets `BrowserSignin: 0` and `SyncDisabled: true`, so Chrome does not ask
+to sign in to a Google account and does not sync the profile.
+
+That is a **browser-level** control, and it is worth being precise about
+what it is not: it does not block a sign-in to a *website*. Signing in to
+a Google website from the desktop is a separate matter, and it has not
+been verified. Both are listed in `docs/ACCEPTANCE.md`.
 
 A profile that is in use when the container is stopped uncleanly is not
 deleted: Chrome writes its state when it exits, and the next start opens the
@@ -253,8 +289,12 @@ The passphrase is never printed, never in a log, never in the process table
 and never in an environment variable. It is written to the keyring daemon's
 standard input and to nothing else.
 
-The keyring data lives in `.cloudchrome/xdg/keyrings/`, so the secrets
-survive a restart and a rebuild.
+The keyring data lives in `.cloudchrome/xdg/keyrings/`, which is where the
+keyring daemon writes the login keyring and the user keystore. It is on
+the persistent volume, so the secrets survive a restart of the container
+and, by the design of the persistent volume, a rebuild of the image as
+well. The rebuild itself has not been performed end to end; it is a
+pending item in the acceptance checklist.
 
 **The runtime fails closed.** Before Chrome is started, the secret service is
 verified by storing a secret and reading it back. If that does not work,
