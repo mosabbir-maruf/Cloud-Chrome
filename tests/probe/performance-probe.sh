@@ -205,7 +205,7 @@ for index in $(seq 1 "$STARTUP_SAMPLES"); do
     if bash "$CLI" start > "$WORK/start.log" 2>&1 && wait_until_healthy; then
         finished=$(now_ms)
         elapsed=$((finished - started))
-        startup_samples="$startup_samples$elapsed\n"
+        startup_samples="$startup_samples$elapsed"$'\n'
         printf 'sample %2d  %6d ms\n' "$index" "$elapsed"
     else
         startup_failures=$((startup_failures + 1))
@@ -215,6 +215,11 @@ for index in $(seq 1 "$STARTUP_SAMPLES"); do
 done
 kv "the startup failures" "$startup_failures of $STARTUP_SAMPLES"
 kv "the startup summary (ms)" "$(stats_summary "$startup_samples")"
+
+# The supervisor writes a timestamped line for every step of the startup,
+# so the timeline shows where the time went.
+printf -- '\n--- the timeline of the last startup ---\n'
+tail -25 "$CLOUDCHROME_PERSIST_DIR/logs/supervisor.log" 2>/dev/null | sed 's/^/  /'
 
 # ---------------------------------------------------------------------------
 section "4. Shutdown"
@@ -239,7 +244,7 @@ for index in $(seq 1 "$STARTUP_SAMPLES"); do
     elapsed=$((finished - started))
     left=$(alive_pids "$pids")
     if [ "$left" = "0" ]; then
-        shutdown_samples="$shutdown_samples$elapsed\n"
+        shutdown_samples="$shutdown_samples$elapsed"$'\n'
         printf 'sample %2d  %6d ms  %s processes\n' "$index" "$elapsed" "$(echo "$pids" | wc -w)"
     else
         shutdown_failures=$((shutdown_failures + 1))
@@ -262,7 +267,7 @@ for index in $(seq 1 "$STARTUP_SAMPLES"); do
     bash "$CLI" start --if-needed > "$WORK/warm.log" 2>&1
     finished=$(now_ms)
     elapsed=$((finished - started))
-    warm_samples="$warm_samples$elapsed\n"
+    warm_samples="$warm_samples$elapsed"$'\n'
     printf 'sample %2d  %6d ms\n' "$index" "$elapsed"
 done
 kv "the warm start summary (ms)" "$(stats_summary "$warm_samples")"
@@ -386,9 +391,9 @@ for index in $(seq 1 "$BACKUP_SAMPLES"); do
         archive=$(sed -n 's/^backup written: //p' "$WORK/backup.log")
         size=$(stat -c '%s' "$archive" 2>/dev/null || echo 0)
         members=$(sed -n 's/^members: *//p' "$WORK/backup.log")
-        backup_samples="$backup_samples$elapsed\n"
-        backup_sizes="$backup_sizes$size\n"
-        backup_members="$backup_members$members\n"
+        backup_samples="$backup_samples$elapsed"$'\n'
+        backup_sizes="$backup_sizes$size"$'\n'
+        backup_members="$backup_members$members"$'\n'
         printf 'sample %2d  %6d ms  %8s bytes  %s members\n' \
             "$index" "$elapsed" "$size" "$members"
     else
@@ -410,7 +415,9 @@ if [ -n "$archive" ] && [ -f "$archive" ]; then
     members=$(age --decrypt --identity \
         "$CLOUDCHROME_PERSIST_DIR/keys/backup-identity.txt" "$archive" 2>/dev/null \
         | tar -tzf - 2>/dev/null | sort)
-    printf '%s\n' "$members" | sed 's/^/  member: /'
+    member_count=$(printf '%s\n' "$members" | wc -l)
+    kv "the members of the archive" "$member_count"
+    printf '%s\n' "$members" | head -30 | sed 's/^/  member: /'
 fi
 
 # ---------------------------------------------------------------------------
@@ -430,7 +437,7 @@ for index in $(seq 1 "$BACKUP_SAMPLES"); do
     if bash "$CLI" restore --source "$archive" --yes > "$WORK/restore.log" 2>&1; then
         finished=$(now_ms)
         elapsed=$((finished - started))
-        restore_samples="$restore_samples$elapsed\n"
+        restore_samples="$restore_samples$elapsed"$'\n'
         if wait_until_healthy; then
             restore_healthy=$((restore_healthy + 1))
             printf 'sample %2d  %6d ms  healthy\n' "$index" "$elapsed"

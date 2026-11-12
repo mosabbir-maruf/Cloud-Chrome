@@ -173,7 +173,9 @@ publish_evidence() {
 # a percentile is not a single number and the method has to be known for
 # the number to mean anything.
 stats_summary() {
-    printf '%s\n' "$1" | awk 'NF' | sort -n | awk '
+    # The samples may be separated by real newlines or by the two
+    # characters "\n", so the escape is interpreted either way.
+    printf '%b\n' "$1" | awk 'NF' | sort -n | awk '
         { v[NR] = $1 }
         END {
             if (NR == 0) { print "count=0"; exit }
