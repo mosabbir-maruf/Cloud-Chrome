@@ -195,28 +195,38 @@ often. It is fixed in `lib/cloudchrome/supervisor.py` and
 
 The strongest of the measurements: the same startup, ten times, with the
 optimised runtime and with the runtime of `c6bc7f2`, in the same
-container and within the same minutes. The evidence is
-[issue #36](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/36).
+container and within the same minutes. It was run twice, in two
+independent Codespaces, and the two agree.
+
+The evidence is [issue #36](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/36)
+and [issue #38](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/38),
+the second of which is the run of the final commit.
 
 | The code | min | median | p95 | max |
 |---|---|---|---|---|
 | `c6bc7f2`, before the optimisation | 4 117 ms | **4 892 ms** | 6 123 ms | 6 123 ms |
 | The optimised runtime | 2 153 ms | **2 454 ms** | 3 306 ms | 3 306 ms |
-| **The difference** | | **−49.8 %** | −46.0 % | −46.0 % |
+| **The difference, the first run** | | **−49.8 %** | −46.0 % | −46.0 % |
+| `c6bc7f2`, before the optimisation | 4 183 ms | **4 802 ms** | 6 328 ms | 6 328 ms |
+| The optimised runtime | 2 217 ms | **2 287 ms** | 2 836 ms | 2 836 ms |
+| **The difference, the second run** | | **−52.4 %** | −55.2 % | −55.2 % |
 
 ### The whole picture
 
+The "before" column is the baseline run, the "after" column is the final
+run, and both are in the same machine type.
+
 | Measurement | Before | After | The change |
 |---|---|---|---|
-| The startup, median | 4 222 ms | **2 454 ms** | **−42 %** |
-| The startup, same container | 4 892 ms | **2 454 ms** | **−50 %** |
-| The shutdown, median | 509 ms | 588 ms | within the noise |
-| The warm start, median | 65 ms | 70 ms | within the noise |
-| The backup, median | 6 793 ms | **5 114 ms** | **−25 %** |
-| The restore, median | 5 441 ms | **4 081 ms** | **−25 %** |
-| The proportional set size | 363 MiB | 360 MiB | unchanged |
-| The idle CPU of the desktop | not measured in a container way | 3.93 % of one CPU | measured |
-| The archive of a backup | 41 MiB, 459 members | 41 MiB, 460 members | unchanged |
+| The startup, median | 4 222 ms | **2 287 ms** | **−46 %** |
+| The startup, same container | 4 892 / 4 802 ms | **2 454 / 2 287 ms** | **−50 % / −52 %** |
+| The shutdown, median | 509 ms | 638 ms | within the noise |
+| The warm start, median | 65 ms | 67 ms | within the noise |
+| The backup, median | 6 793 ms | **5 345 ms** | **−21 %** |
+| The restore, median | 5 441 ms | **4 308 ms** | **−21 %** |
+| The proportional set size | 363 MiB | 359 MiB | unchanged |
+| The idle CPU of the desktop | not measured in a container way | 3.87 % of one CPU | measured |
+| The archive of a backup | 41 MiB, 459 members | 41 MiB, 461 members | unchanged |
 
 The backup and the restore are faster for the same reason: the backup
 stops the desktop for the snapshot and starts it again, and the restore
@@ -232,16 +242,17 @@ user and the system time of the processes of the desktop:
 
 | | |
 |---|---|
-| The CPU time of the desktop | 1.180 s in 30 s |
-| The share of one CPU | 3.93 % |
-| The share of the two CPUs of the machine | 1.97 % |
+| The CPU time of the desktop | 1.160 s in 30 s |
+| The share of one CPU | 3.87 % |
+| The share of the two CPUs of the machine | 1.93 % |
 | The busy share of the host in the same window | 4.46 % |
 
 The desktop is almost all of the load of the machine in that window. The
 host counters are reported because they are the context, and they are
 explicitly **not** a measure of the desktop: a run of the probe on a
 busy host reported 29.57 % for the host while the desktop itself used
-3.87 % of one CPU.
+3.87 % of one CPU. Two independent runs measured 3.87 % and 3.93 % for
+the desktop, which is the repeatability of the metric.
 
 ---
 
