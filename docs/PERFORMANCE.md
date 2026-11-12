@@ -200,7 +200,9 @@ independent Codespaces, and the two agree.
 
 The evidence is [issue #36](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/36)
 and [issue #38](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/38),
-the second of which is the run of the final commit.
+the second of which is the run of the final commit. The runtime probe of
+the same run is issue
+[#39](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/39).
 
 | The code | min | median | p95 | max |
 |---|---|---|---|---|
