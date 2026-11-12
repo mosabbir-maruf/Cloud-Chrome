@@ -201,7 +201,8 @@ no child is left behind.
 ### 4.3 Chrome sandbox activation
 
 Measured on the CI runner and again inside a real Codespaces dev container
-(issue #9):
+(the historical run is issue #9; the current run is
+[#27](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/27)):
 
 | Check | Result |
 |---|---|
@@ -606,3 +607,15 @@ the evidence from the repository issue the probe publishes. The
 `runtime-probe` workflow does the same thing, but needs a repository secret
 holding a token with the `codespace` scope, because `codespaces` is not a
 valid `GITHUB_TOKEN` permission scope.
+
+The performance probe is run the same way. It takes the same branch, the
+same `postCreateCommand` and the same publication, and it publishes its own
+issue. `CLOUDCHROME_PERF_COMPARE_COMMIT` makes it measure the same startup
+twice in one container, once with the runtime of the checkout and once with
+the runtime of another commit, so that a before and after does not depend
+on the load of the host. The method and the results are in
+`docs/PERFORMANCE.md`.
+
+Neither probe is a substitute for a person looking at the browser. They
+measure the ports, the processes, the secrets and the transactions; the
+visual acceptance is listed in `docs/ACCEPTANCE.md` and is still pending.

@@ -35,8 +35,11 @@ cloudchrome url         # the noVNC URL of this Codespace
   the fonts a page expects.
 - **A browser is the only client.** The noVNC client is served over the
   forwarded port; the raw RFB port never leaves the container.
-- **The state survives a rebuild.** The Chrome profile, the GNOME Keyring
-  and the backups live on the Codespaces persistent volume.
+- **The state outlives the container.** The Chrome profile, the GNOME
+  Keyring and the backups live on the Codespaces persistent volume, so
+  they are there when the container is replaced. A rebuild of the image
+  keeps them as well, because the volume is what holds them; that last
+  one is the design, and no rebuild has been performed end to end yet.
 - **The secrets stay secret.** The VNC password, the keyring passphrase
   and the encryption identity are private files, never printed into a log
   and never in a backup.
