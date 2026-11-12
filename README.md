@@ -1,19 +1,44 @@
 # Cloud-Chrome
 
-### A private Linux desktop with Google Chrome, running in your GitHub Codespace.
+<h1 align="center">Cloud-Chrome</h1>
 
-Use Chrome from a browser through the Codespaces port panel. No local Docker,
-Linux, or VS Code installation is required.
+<p align="center">
+  A private Linux desktop with Google Chrome, running in your GitHub Codespace.
+  Connect from an ordinary browser; no local Docker, Linux, or VS Code installation is required.
+</p>
 
-[![Docker image](https://img.shields.io/badge/GHCR-cloud--chrome-blue?logo=docker)](https://github.com/orgs/mosabbir-maruf/packages/container/package/cloud-chrome)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
-[![XFCE](https://img.shields.io/badge/XFCE-desktop-2284F2?logo=xfce&logoColor=white)](https://www.xfce.org/)
-[![TigerVNC](https://img.shields.io/badge/TigerVNC-VNC-3B6EA5)](https://tigervnc.org/)
-[![noVNC](https://img.shields.io/badge/noVNC-browser%20client-4A90E2)](https://novnc.com/)
-[![GNOME Keyring](https://img.shields.io/badge/GNOME-Keyring-4A86CF?logo=gnome&logoColor=white)](https://wiki.gnome.org/Projects/GnomeKeyring)
-[![Google Chrome](https://img.shields.io/badge/Google-Chrome-4285F4?logo=googlechrome&logoColor=white)](https://www.google.com/chrome/)
+<p align="center">
+  <a href="https://github.com/orgs/mosabbir-maruf/packages/container/package/cloud-chrome">
+    <img src="https://img.shields.io/badge/GHCR-cloud--chrome-blue?logo=docker" alt="Cloud-Chrome container image on GHCR" />
+  </a>
+  <a href="https://github.com/mosabbir-maruf/Cloud-Chrome/actions/workflows/ci.yml">
+    <img src="https://github.com/mosabbir-maruf/Cloud-Chrome/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" />
+  </a>
+  <a href="https://ubuntu.com/">
+    <img src="https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu 24.04" />
+  </a>
+  <a href="https://www.xfce.org/">
+    <img src="https://img.shields.io/badge/XFCE-desktop-2284F2?logo=xfce&logoColor=white" alt="XFCE" />
+  </a>
+  <a href="https://tigervnc.org/">
+    <img src="https://img.shields.io/badge/TigerVNC-VNC-3B6EA5" alt="TigerVNC" />
+  </a>
+  <a href="https://novnc.com/">
+    <img src="https://img.shields.io/badge/noVNC-browser%20client-4A90E2" alt="noVNC" />
+  </a>
+  <a href="https://www.google.com/chrome/">
+    <img src="https://img.shields.io/badge/Google-Chrome-4285F4?logo=googlechrome&logoColor=white" alt="Google Chrome" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License" />
+  </a>
+</p>
 
-**Browser-based access · Persistent Codespace profile · Encrypted backups**
+<p align="center">
+  <strong>Browser access · Persistent profile · Encrypted backups</strong>
+</p>
+
+---
 
 The desktop runs Xvnc, XFCE, GNOME Keyring, noVNC and Chrome inside the
 Codespace. The only forwarded desktop interface is port `6080`; the raw VNC
