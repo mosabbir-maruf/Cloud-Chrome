@@ -1,5 +1,3 @@
-# Cloud-Chrome
-
 <h1 align="center">Cloud-Chrome</h1>
 
 <p align="center">
@@ -35,14 +33,14 @@
 </p>
 
 <p align="center">
-  <strong>Browser access · Persistent profile · Encrypted backups</strong>
+  <strong>Browser access · Persistent profile · Encrypted backups</strong><br />
+  <sub>
+    Xvnc · XFCE · GNOME Keyring · noVNC · Chrome<br />
+    Port <code>6080</code> is forwarded; raw VNC port <code>5900</code> stays loopback-only and must never be forwarded.
+  </sub>
 </p>
 
 ---
-
-The desktop runs Xvnc, XFCE, GNOME Keyring, noVNC and Chrome inside the
-Codespace. The only forwarded desktop interface is port `6080`; the raw VNC
-port `5900` remains loopback-only and must never be forwarded.
 
 ## Screenshots
 
