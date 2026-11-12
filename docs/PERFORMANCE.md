@@ -195,12 +195,16 @@ often. It is fixed in `lib/cloudchrome/supervisor.py` and
 
 The strongest of the measurements: the same startup, ten times, with the
 optimised runtime and with the runtime of `c6bc7f2`, in the same
-container and within the same minutes. It was run twice, in two
-independent Codespaces, and the two agree.
+container and within the same minutes. It was run three times, in three
+independent Codespaces, and the three agree.
 
-The evidence is [issue #36](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/36)
-and [issue #38](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/38),
-the second of which is the run of the final commit. The runtime probe of
+The evidence is
+[issue #36](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/36),
+[issue #38](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/38) and
+[issue #40](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/40),
+the last of which is the run of the release candidate. The runtime probe
+of the same run is issue
+[#41](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/41). The runtime probe of
 the same run is issue
 [#39](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/39).
 
@@ -212,6 +216,9 @@ the same run is issue
 | `c6bc7f2`, before the optimisation | 4 183 ms | **4 802 ms** | 6 328 ms | 6 328 ms |
 | The optimised runtime | 2 217 ms | **2 287 ms** | 2 836 ms | 2 836 ms |
 | **The difference, the second run** | | **−52.4 %** | −55.2 % | −55.2 % |
+| `c6bc7f2`, before the optimisation | 4 163 ms | **4 792 ms** | 5 205 ms | 5 205 ms |
+| The optimised runtime | 2 183 ms | **2 441 ms** | 3 253 ms | 3 253 ms |
+| **The difference, the third run** | | **−49.1 %** | −37.5 % | −37.5 % |
 
 ### The whole picture
 
@@ -220,8 +227,8 @@ run, and both are in the same machine type.
 
 | Measurement | Before | After | The change |
 |---|---|---|---|
-| The startup, median | 4 222 ms | **2 287 ms** | **−46 %** |
-| The startup, same container | 4 892 / 4 802 ms | **2 454 / 2 287 ms** | **−50 % / −52 %** |
+| The startup, median | 4 222 ms | **2 441 ms** | **−42 %** |
+| The startup, same container | 4 892 / 4 802 / 4 792 ms | **2 454 / 2 287 / 2 441 ms** | **−50 % / −52 % / −49 %** |
 | The shutdown, median | 509 ms | 638 ms | within the noise |
 | The warm start, median | 65 ms | 67 ms | within the noise |
 | The backup, median | 6 793 ms | **5 345 ms** | **−21 %** |

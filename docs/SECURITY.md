@@ -20,8 +20,8 @@ repository issues. The current ones are:
 
 | Evidence | Issue |
 |---|---|
-| The runtime of the desktop stack, in a Codespace | [#39](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/39) |
-| The performance of the desktop stack, in a Codespace | [#38](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/38) |
+| The runtime of the desktop stack, in a Codespace | [#41](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/41) |
+| The performance of the desktop stack, in a Codespace | [#40](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/40) |
 
 The earlier issues (#1 to #26) are the history of the measurement and are
 kept for the record. They describe earlier states of the code, and a
@@ -202,7 +202,7 @@ no child is left behind.
 
 Measured on the CI runner and again inside a real Codespaces dev container
 (the historical run is issue #9; the current run is
-[#39](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/39)):
+[#41](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/41)):
 
 | Check | Result |
 |---|---|
@@ -359,7 +359,7 @@ variable.
 A real GitHub Codespaces dev container (`basicLinux32gb`, Ubuntu 24.04.3 LTS,
 kernel `6.8.0-1070-azure`) was created from a branch that runs the runtime
 probe. The raw transcript is published as repository issue
-[#39](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/39).
+[#41](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/41).
 
 | Measurement | Result |
 |---|---|

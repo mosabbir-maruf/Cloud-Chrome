@@ -72,7 +72,7 @@ complete on the strength of an HTTP status code.
 
 | | |
 |---|---|
-| The automated items | verified by the CI run and the published Codespaces evidence: issue [#39](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/39) for the runtime and issue [#38](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/38) for the performance |
+| The automated items | verified by the CI run and the published Codespaces evidence: issue [#41](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/41) for the runtime and issue [#40](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/40) for the performance |
 | The human items | **all seven are pending** |
 | The known host-level limitation | unresolved; it needs a host-level control and it is documented in `docs/SECURITY.md` |
 
