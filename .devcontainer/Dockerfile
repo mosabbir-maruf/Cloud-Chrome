@@ -14,6 +14,14 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04@sha256:d94c97dd9cacf183d0
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TARGETARCH
+ARG OCI_SOURCE
+ARG OCI_REVISION
+ARG OCI_CREATED
+
+LABEL org.opencontainers.image.source="${OCI_SOURCE}" \
+      org.opencontainers.image.revision="${OCI_REVISION}" \
+      org.opencontainers.image.created="${OCI_CREATED}" \
+      org.opencontainers.image.title="Cloud-Chrome"
 
 # Checksum verification uses a pipeline, so failures must not be masked.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

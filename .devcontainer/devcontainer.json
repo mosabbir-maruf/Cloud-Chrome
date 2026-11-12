@@ -1,9 +1,6 @@
 {
   "name": "Cloud-Chrome",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": ".."
-  },
+  "image": "ghcr.io/mosabbir-maruf/cloud-chrome:latest",
   "remoteUser": "vscode",
   "hostRequirements": {
     "cpus": 2,

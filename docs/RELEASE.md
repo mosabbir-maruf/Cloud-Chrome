@@ -94,5 +94,12 @@ The publication is the repository owner's. When it happens:
       version.
 - [ ] The image is built from the release commit and its digest is
       recorded.
+- [ ] For a public launch, the linked GHCR package visibility is explicitly
+      set to Public so anonymous users can pull the prebuilt image.
+- [ ] The publishing workflow retains only the current tested image version;
+      documentation-only changes do not publish an image.
+- [ ] If the GHCR package is public, check whether GitHub's 5,000-download
+      deletion limit blocks old versions; the workflow must report blocked
+      cleanup without claiming one-version retention.
 - [ ] The human acceptance items are done, or the release notes say that
       they are not.
