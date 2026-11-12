@@ -13,6 +13,9 @@ terminal.
 - [Where the state lives](#where-the-state-lives)
 - [Accessing the desktop](#accessing-the-desktop)
 - [The VNC password](#the-vnc-password)
+- [The Chrome profile](#the-chrome-profile)
+- [The GNOME Keyring](#the-gnome-keyring)
+- [The known host-level limitation](#the-known-host-level-limitation)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -32,15 +35,16 @@ cloudchrome status
 The desktop is reachable through the forwarded port 6080, which the Codespaces
 port panel opens in the browser. The browser asks for the VNC password.
 
-To see the password:
+To generate or rotate the password:
 
 ```
 cloudchrome passwd
 ```
 
-That rotates the password and prints the new one. It refuses to print when
-standard output is not a terminal, so the password never ends up in a pipe, a
-log or a shell history by accident.
+That generates and installs a new password, then prints it once. It does not
+retrieve the existing password. The command refuses to rotate the password
+when standard output is not an interactive terminal, so it cannot leave you
+without a password you can use.
 
 ---
 
@@ -126,8 +130,8 @@ authenticated stay authenticated: the server reads the file when a new
 connection arrives.
 
 The password is printed only when standard output is an interactive terminal.
-Without a terminal the rotation still happens, but nothing is printed and the
-command says so.
+Without a terminal, the command refuses to rotate it, so it cannot lock you
+out with a password it could not display.
 
 The stored password is an **8-byte obfuscated key**, not encrypted storage.
 Anyone who can read the file can mount an offline attack on the password.
@@ -195,10 +199,10 @@ login keyring and the user keystore. The legacy `keyring/` directory
 beside it holds nothing; it is not where the keyring lives, and the
 runtime does not treat it as proof that the live store is safe.
 
-The workspace is the Codespaces persistent volume, so the profile, the
-keyring and the backups are there when the container is replaced. Whether a
-**rebuild** of the image keeps them depends on the Codespaces volume
-surviving that rebuild; that has not been verified end to end, so it is
+The Codespaces workspace is intended to persist across stopping and
+restarting the same Codespace, so the profile, keyring and backups remain
+available then. The workspace is also the configured persistence location,
+but whether a **rebuild** preserves it has not been verified end to end; it is
 listed as a pending acceptance item in `docs/ACCEPTANCE.md`.
 
 The directory is listed in `.gitignore` and excluded from the Docker build
@@ -241,6 +245,16 @@ container's network namespace either.
 
 ---
 
+## The VNC password
+
+`cloudchrome passwd` generates and installs a new password; it does not
+retrieve the current password. It prints the new value only to an interactive
+terminal and refuses to rotate it when standard output is not interactive.
+Keep the password private. The password file is an 8-byte obfuscated key, not
+encrypted storage.
+
+---
+
 ## The Chrome profile
 
 The browser profile lives in `.cloudchrome/chrome/`, which is inside the
@@ -249,10 +263,9 @@ Codespaces persistent volume. It therefore survives:
 * a stop and a start,
 * a restart of the container.
 
-It is on the persistent volume, so a rebuild of the image keeps it as
-well. That last one is the design, not a measurement: no rebuild has been
-performed end to end, and it is a pending item in the acceptance
-checklist.
+It is on the persistent volume. Preservation across a rebuild is the design,
+not a measurement: no rebuild has been performed end to end, and it is a
+pending item in the acceptance checklist.
 
 Cookies, the browsing history, the preferences, the extensions and the
 signed-in website sessions are all part of it, so a session that was signed
@@ -291,10 +304,9 @@ standard input and to nothing else.
 
 The keyring data lives in `.cloudchrome/xdg/keyrings/`, which is where the
 keyring daemon writes the login keyring and the user keystore. It is on
-the persistent volume, so the secrets survive a restart of the container
-and, by the design of the persistent volume, a rebuild of the image as
-well. The rebuild itself has not been performed end to end; it is a
-pending item in the acceptance checklist.
+the persistent volume, so the secrets are expected to survive a stop and
+restart of the same Codespace. Preservation across an image rebuild is the
+design, not a measurement; it remains pending in the acceptance checklist.
 
 **The runtime fails closed.** Before Chrome is started, the secret service is
 verified by storing a secret and reading it back. If that does not work,
