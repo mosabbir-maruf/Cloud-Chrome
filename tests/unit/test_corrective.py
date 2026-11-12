@@ -732,21 +732,45 @@ class ProcessTableTest(unittest.TestCase):
     and waiting for it waits for nothing.
     """
 
+    @staticmethod
+    def _state(pid):
+        """The state of a process, read from the process table."""
+        try:
+            with open("/proc/%d/stat" % pid, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            return ""
+        try:
+            index = data.rindex(b")")
+        except ValueError:
+            return ""
+        fields = data[index + 2:].split()
+        return fields[0].decode("ascii", "replace") if fields else ""
+
     def _zombie(self):
-        """A child that has exited and has not been reaped."""
+        """A child that has exited and has not been reaped.
+
+        The state is read from the process table directly, because the
+        point of the test is that the runtime recognises the state and
+        the test must not ask the runtime whether it is a zombie.
+        """
         import time
 
         pid = os.fork()
         if pid == 0:
             os._exit(0)
-        deadline = time.monotonic() + 10
+
+        # The child has to be given the chance to run and to exit before
+        # it becomes a zombie.
+        state = ""
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            if procs.pid_alive(pid):
-                # The entry is there: the child is a zombie.
+            state = self._state(pid)
+            if state == "Z" or state == "":
                 break
             time.sleep(0.02)
         self.addCleanup(self._reap, pid)
-        return pid
+        return pid, state
 
     @staticmethod
     def _reap(pid):
@@ -756,16 +780,16 @@ class ProcessTableTest(unittest.TestCase):
             pass
 
     def test_a_zombie_is_reported_as_exited(self):
-        pid = self._zombie()
+        pid, state = self._zombie()
+        self.assertEqual(state, "Z", "the child did not become a zombie")
         self.assertTrue(procs.pid_alive(pid))
         self.assertTrue(procs.pid_exited(pid))
 
     def test_the_terminate_does_not_wait_for_a_zombie(self):
         import time
 
-        from cloudchrome import procs
-
-        pid = self._zombie()
+        pid, state = self._zombie()
+        self.assertEqual(state, "Z", "the child did not become a zombie")
         started = time.monotonic()
         gone = procs.terminate(pid, timeout=30)
         elapsed = time.monotonic() - started
@@ -781,8 +805,10 @@ class ProcessTableTest(unittest.TestCase):
         import sys
 
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        self.addCleanup(process.kill)
+        # The cleanups run in the reverse order, so the process is killed
+        # before it is waited for.
         self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
         self.assertTrue(procs.pid_alive(process.pid))
         self.assertFalse(procs.pid_exited(process.pid))
 
