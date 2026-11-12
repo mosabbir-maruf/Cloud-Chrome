@@ -33,16 +33,17 @@ would therefore prove nothing about the live store.
 
 The age private key is **not** in the backup either. It lives in
 `.cloudchrome/keys/backup-identity.txt` with mode 0600 and it is the only
-thing that can decrypt the archive. Copy it somewhere safe if you want to be
-able to restore the backup on another machine.
+thing that can decrypt the archive. Export it and store it securely outside
+the Codespace if you want to restore a backup after deleting that Codespace.
 
 **Keep the identity outside the Codespace.** The identity and the backups
 live in the same persistent volume, so deleting the Codespace takes both
 of them. A backup without its identity is a file that nobody can read:
 the age format is authenticated, and the wrong identity is refused. Before
-you delete a Codespace, copy `.cloudchrome/keys/backup-identity.txt` and
-the `.cloudchrome/backups/` directory somewhere else. Without that copy,
-the recovery is impossible.
+you delete a Codespace, export and securely store the identity outside it,
+and copy the `.cloudchrome/backups/` directory or any separately saved backup
+archives somewhere else too. Do not promise recovery after deletion unless
+you have both the matching identity and an archive outside the Codespace.
 
 ---
 

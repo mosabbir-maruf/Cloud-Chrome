@@ -10,6 +10,7 @@ what has to be ticked first.
 - [The artefacts](#the-artefacts)
 - [The known limitations](#the-known-limitations)
 - [The publication](#the-publication)
+- [Public launch](#public-launch)
 
 ---
 
@@ -56,6 +57,8 @@ what has to be ticked first.
 - [ ] `README.md`, `docs/USAGE.md`, `docs/BACKUP.md`, `docs/SECURITY.md`,
       `docs/PERFORMANCE.md` and `docs/ACCEPTANCE.md` agree with each
       other and with the code.
+- [ ] The README quick start, troubleshooting links, and license scope are
+      accurate; the root MIT license covers only original project material.
 - [ ] The state layout in `docs/USAGE.md` matches what the runtime
       creates, including the GNOME Keyring store at `xdg/keyrings/`.
 - [ ] The evidence issues that the documents refer to are the current
@@ -103,3 +106,60 @@ The publication is the repository owner's. When it happens:
       cleanup without claiming one-version retention.
 - [ ] The human acceptance items are done, or the release notes say that
       they are not.
+
+## Public launch
+
+Repository and package visibility are separate owner actions. Making the
+repository public does **not** make its GHCR package public. Do not announce
+that anonymous prebuilt-image use works until the separate package setting
+and an anonymous pull have both been checked.
+
+### Repository owner's launch checklist
+
+- [ ] Complete real-Codespace acceptance testing in
+      [`ACCEPTANCE.md`](ACCEPTANCE.md): render the browser desktop, confirm
+      website login and session persistence, and test an actual Codespaces
+      rebuild. Keep unverified items marked pending.
+- [ ] Confirm the forwarded port `6080` opens the noVNC desktop in a normal
+      browser, with XFCE and Chrome visible.
+- [ ] Confirm website login behavior and that the relevant website session
+      survives a Codespace stop/start. Chrome browser-level sign-in and Sync
+      policy are a separate matter.
+- [ ] Confirm that the Chrome profile, GNOME Keyring and backups behave as
+      documented across an actual Codespace rebuild.
+- [ ] Review the user runbook, security limitations, troubleshooting, and the
+      root [`LICENSE`](../LICENSE); confirm they accurately describe this
+      repository and the third-party boundaries.
+- [ ] When intentionally launching publicly, change repository visibility
+      to **Public** in the repository settings.
+- [ ] Separately change the linked GHCR package visibility to **Public** if
+      anonymous Codespaces pulls are intended. Repository visibility alone is
+      insufficient.
+- [ ] From an anonymous environment, verify that
+      `ghcr.io/mosabbir-maruf/cloud-chrome:latest` can be pulled without
+      credentials. Do not use an authenticated pull as evidence of anonymous
+      access.
+- [ ] Record the published image digest and verify it corresponds to the
+      tested image artifact/release commit.
+- [ ] Test Codespaces creation from the public repository using the published
+      image, including initialization and the browser workflow.
+- [ ] Confirm the latest CI publisher and retention result separately; a PR
+      run does not publish. The publisher runs only for eligible successful
+      `main` pushes or manual dispatches; verify its run and remote retention.
+- [ ] Review whether GitHub's public-package 5,000-download deletion limit
+      affects retention, and describe any blocked cleanup accurately.
+
+The repository visibility change is separate from the GHCR package visibility
+change above. Neither visibility change is part of this documentation task.
+
+### Normal users
+
+- [ ] Create a personal Codespace; repository read access does not grant
+      upstream write permission.
+- [ ] Keep port `6080` private and do not expose port `5900`.
+- [ ] Store the VNC password and backup age identity privately. Before
+      deleting a Codespace, preserve both the encrypted backup archive and its
+      matching age identity outside the Codespace.
+- [ ] Check personal Codespaces quota and spending limits. Stop the Codespace
+      when it is not in use; storage billing may continue under GitHub's
+      current policies.
