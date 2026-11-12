@@ -207,11 +207,15 @@ class Supervisor:
         self.log("started %s (pid %d)" % (name, process.pid))
         return component
 
-    def wait_for(self, name, predicate, timeout=30.0, interval=0.25):
+    def wait_for(self, name, predicate, timeout=30.0, interval=0.05):
         """Wait until *predicate* is satisfied for a component.
 
         A stop request interrupts the wait, so a signal that arrives while
         the stack is still coming up is honoured at once.
+
+        The interval is short, because the time spent waiting for the poll
+        is time the user spends waiting for the desktop. The predicate is
+        cheap: a socket, a port or a process.
         """
         component = self.components.get(name)
         deadline = time.monotonic() + timeout
@@ -380,8 +384,12 @@ class Supervisor:
             )
             time.sleep(1.0)
 
-    def _wait_for_window_manager(self, timeout=20.0):
-        """True when a window manager is running for the desktop."""
+    def _wait_for_window_manager(self, timeout=20.0, interval=0.15):
+        """True when a window manager is running for the desktop.
+
+        The wait looks through the process table, which is not free, so
+        the interval is longer than the one of the other waits.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             component = self.components.get("desktop")
@@ -395,7 +403,7 @@ class Supervisor:
                     continue
                 if os.path.basename(argv[0]) in ("xfwm4", "xfwm4.exe"):
                     return True
-            time.sleep(0.5)
+            time.sleep(interval)
         return False
 
     def start_novnc(self):
@@ -434,9 +442,39 @@ class Supervisor:
             [self.config.chrome_binary] + arguments,
             env=env,
         )
-        time.sleep(2.0)
-        if not self.components["chrome"].alive():
-            raise CloudChromeError("Chrome exited immediately after it was started")
+        self._wait_for_chrome()
+
+    def _wait_for_chrome(self, settle=1.0, interval=0.05, timeout=30.0):
+        """Wait until Chrome has survived its settle period.
+
+        Chrome fails in two ways. It exits at once -- a sandbox that does
+        not work, a profile that is locked -- and that is reported here.
+        It fails later, and the monitor loop reports that.
+
+        The wait is a condition and not a fixed sleep, so a Chrome that
+        fails is reported at once instead of after the whole wait. The
+        settle period is the time the browser is given to fail before the
+        stack is declared up. It is a tenth of the time the failure was
+        observed to take, so the margin is wide.
+        """
+        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        while time.monotonic() < deadline:
+            component = self.components.get("chrome")
+            if component is None or not component.alive():
+                code = None
+                if component is not None and component.process is not None:
+                    code = component.process.poll()
+                raise CloudChromeError(
+                    "Chrome exited immediately after it was started"
+                    " (exit code %s)" % code
+                )
+            if time.monotonic() - started >= settle:
+                return
+            time.sleep(interval)
+        raise CloudChromeError(
+            "Chrome did not report itself within %ds" % int(timeout)
+        )
 
     def start(self):
         """Start the whole stack in dependency order."""

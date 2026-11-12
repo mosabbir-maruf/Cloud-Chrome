@@ -144,7 +144,7 @@ def secret_service_owner_pid(env, timeout=10):
     return match
 
 
-def wait_for_secret_service(env, daemon_pid, keyring_file, timeout=30.0, interval=0.25):
+def wait_for_secret_service(env, daemon_pid, keyring_file, timeout=30.0, interval=0.1):
     """Wait until the unlocking daemon serves the Secret Service.
 
     Three things have to be true before the first client call: the daemon

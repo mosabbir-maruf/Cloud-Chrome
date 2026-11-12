@@ -163,7 +163,7 @@ class Lifecycle:
                 # started: a state left by an earlier stack says nothing
                 # about this one.
                 if state.get("supervisor_pid") != process.pid:
-                    time.sleep(0.2)
+                    time.sleep(0.02)
                     continue
                 if state.get("state") == "running":
                     return
@@ -171,7 +171,10 @@ class Lifecycle:
                     raise CloudChromeError(
                         "the desktop stack failed to start: %s" % state.get("error")
                     )
-            time.sleep(0.5)
+            # The supervisor writes the state once, when the stack is up.
+            # The wait polls often, because the time spent waiting for the
+            # poll is time the user spends waiting for the desktop.
+            time.sleep(0.05)
         raise CloudChromeError("the supervisor did not report a ready stack in time")
 
     # --- health -------------------------------------------------------------
