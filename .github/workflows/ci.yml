@@ -133,6 +133,15 @@ jobs:
           echo "--- the resolver ---"
           cat /etc/resolv.conf | sed 's/^/      /'
 
+      - name: Check the probes
+        run: |
+          set -euo pipefail
+          # The probes run inside a Codespaces dev container, so CI cannot
+          # run them end to end. What CI checks is that they are well
+          # formed, that the performance probe stays isolated from the real
+          # state, and that it still cleans up after itself.
+          bash tests/probe/check-probes.sh | tee "$RUNNER_TEMP/probes.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Run the runtime unit tests
         run: |
           set -euo pipefail
@@ -167,18 +176,26 @@ jobs:
       - name: Build the image
         run: |
           set -euo pipefail
+          # The build duration is measured, because the performance report
+          # has to say how long the image takes to build. It is the time
+          # of this step only: the packages come from the cache of the
+          # runner, so the number is the time of an incremental build.
+          build_started=$(date +%s)
           docker build \
             --build-arg TARGETARCH=amd64 \
             -f .devcontainer/Dockerfile \
             -t "$IMAGE_NAME" .
+          build_seconds=$(( $(date +%s) - build_started ))
           size_bytes=$(docker image inspect "$IMAGE_NAME" --format '{{.Size}}')
           echo "IMAGE_SIZE_BYTES=$size_bytes" | tee -a "$GITHUB_OUTPUT"
+          echo "IMAGE_BUILD_SECONDS=$build_seconds" | tee -a "$GITHUB_OUTPUT"
           {
             echo "## Image size"
             echo
             echo "| Metric | Value |"
             echo "| --- | --- |"
             echo "| Uncompressed image size | $((size_bytes / 1024 / 1024)) MiB ($size_bytes bytes) |"
+            echo "| Build duration | $build_seconds s |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export the image for the dependent jobs

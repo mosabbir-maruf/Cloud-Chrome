@@ -13,20 +13,21 @@
 # Output: human-readable evidence on stdout, and to the file named by
 # CLOUDCHROME_PROBE_OUTPUT (default: a temporary file removed on exit).
 
-set -uo pipefail
+PROBE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-WORK=$(mktemp -d /tmp/cloudchrome-probe.XXXXXX)
-EVIDENCE_FILE="${CLOUDCHROME_PROBE_OUTPUT:-$WORK/evidence.txt}"
-mkdir -p "$(dirname "$EVIDENCE_FILE")"
-exec > >(tee -a "$EVIDENCE_FILE") 2>&1
+PROBE_SLUG="sandbox"
+PROBE_TITLE="Cloud-Chrome sandbox probe evidence"
+PROBE_EVIDENCE_NAME="sandbox-evidence.txt"
+PROBE_OUTPUT="${CLOUDCHROME_PROBE_OUTPUT:-}"
+
+# The work directory, the evidence file, the reporting helpers and the
+# publishing machinery are shared with the other probes.
+# shellcheck source=tests/probe/lib/probe-common.sh
+. "$PROBE_DIR/lib/probe-common.sh"
 
 # The workspace root is derived from this script's own location: Codespaces
 # does not export GITHUB_WORKSPACE inside the container.
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-WORKSPACE_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-
-section() { printf '\n########## %s ##########\n' "$1"; }
-kv() { printf '%-46s %s\n' "$1" "${2:-<empty>}"; }
+WORKSPACE_ROOT="$REPO_ROOT"
 
 cleanup() {
   [ -n "${CHROME_PID:-}" ] && kill "$CHROME_PID" 2>/dev/null
@@ -416,70 +417,10 @@ ls -la "$WORK" | sed -n '1,20p'
 # ---------------------------------------------------------------------------
 section "8. Publishing the evidence"
 # ---------------------------------------------------------------------------
-# The Codespaces GITHUB_TOKEN is a REST API credential, not a git credential,
-# so the evidence is published through the repository API. A git push is kept as
-# a secondary path for environments where the workspace remote can push.
-publish_via_issue() {
-  local token="$1" body_file=/tmp/probe-issue.md json_file=/tmp/probe-issue.json
-  {
-    echo "## Cloud-Chrome sandbox probe evidence"
-    echo
-    echo '```'
-    # Keep the body comfortably below the GitHub issue size limit.
-    head -c 50000 "$EVIDENCE_FILE"
-    echo '```'
-  } > "$body_file"
-  python3 -c 'import json,sys;print(json.dumps({"title":"Cloud-Chrome sandbox probe evidence","body":open(sys.argv[1],encoding="utf-8",errors="replace").read()}))' "$body_file" > "$json_file"
-  status=$(curl -sS -o /tmp/probe-issue-resp.json -w '%{http_code}' -X POST \
-      -H "Authorization: Bearer ${token}" \
-      -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
-      --data @"$json_file" \
-      "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" 2>/tmp/probe-issue-err.txt)
-  echo "issue publication HTTP status: ${status}"
-  if [ "${status}" = "201" ]; then
-    echo "published as an issue: $(jq -r '.html_url' /tmp/probe-issue-resp.json 2>/dev/null)"
-  else
-    echo "issue publication failed: $(head -c 300 /tmp/probe-issue-resp.json 2>/dev/null) $(head -c 200 /tmp/probe-issue-err.txt 2>/dev/null)"
-  fi
-  rm -f "$body_file" "$json_file" /tmp/probe-issue-resp.json /tmp/probe-issue-err.txt
-  [ "${status}" = "201" ]
-}
-
-publish_via_git() {
-  local branch="$1" token="$2"
-  (
-    cd "$WORKSPACE_ROOT" || exit 1
-    git config user.email "codespace@users.noreply.github.com"
-    git config user.name "Cloud-Chrome probe"
-    git checkout -B "$branch" >/dev/null 2>&1
-    git add probe-evidence.txt >/dev/null 2>&1
-    git commit -q -m "chore(probe): record sandbox probe evidence" >/dev/null 2>&1
-    git push -q origin "HEAD:refs/heads/${branch}" && exit 0
-    git push -q "https://x-access-token:${token}@github.com/${GITHUB_REPOSITORY}.git" \
-      "HEAD:refs/heads/${branch}" && exit 0
-    exit 1
-  )
-}
-
-if [ "${CLOUDCHROME_PROBE_PUBLISH:-0}" = "1" ] \
-   && [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
-  branch="${CLOUDCHROME_PROBE_BRANCH:-probe/evidence}"
-  git_token="${PROBE_GIT_TOKEN:-$GITHUB_TOKEN}"
-  echo "publish target: branch=$branch workspace=$WORKSPACE_ROOT"
-  published=false
-  if publish_via_issue "$git_token"; then
-    published=true
-  fi
-  if [ "$published" != "true" ] && [ -d "$WORKSPACE_ROOT/.git" ]; then
-    cp "$EVIDENCE_FILE" "$WORKSPACE_ROOT/probe-evidence.txt"
-    if publish_via_git "$branch" "$git_token"; then
-      echo "published via git"
-      published=true
-    fi
-  fi
-  echo "published=$published"
-else
-  echo "publishing not requested"
-fi
+# The Codespaces token is a REST API credential, not a git credential, so
+# the evidence is published through the repository API. A git push is kept
+# as a secondary path for environments where the workspace remote can
+# push. The implementation is shared with the other probes.
+publish_evidence
 
 section "END OF EVIDENCE"
