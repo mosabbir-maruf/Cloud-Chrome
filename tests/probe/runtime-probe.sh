@@ -706,10 +706,12 @@ for scenario, running, expected in (
         print("outcome=accepted")
     except CloudChromeError as exc:
         print("outcome=refused")
-        print("reason=%s" % str(exc)[:160])
+        # The whole reason is printed: the path that failed is part of the
+        # evidence.
+        print("reason=%s" % str(exc))
     except Exception as exc:  # noqa: BLE001
         print("outcome=refused")
-        print("reason=%s" % str(exc)[:160])
+        print("reason=%s" % str(exc))
     finally:
         backup_module._rollback = original_rollback
 

@@ -672,6 +672,53 @@ class RestoreRecoveryTest(BackupFixture):
         self.assertIn("could not be started", str(caught.exception))
         self.assertEqual(len(self._rollback_copies()), 1)
 
+    def test_a_directory_that_cannot_be_removed_does_not_break_the_rollback(self):
+        # Chrome creates directories that the runtime user cannot write
+        # into, in the profile it is using. The rollback has to replace
+        # that profile, so it has to be able to remove it.
+        layout = self.layout
+
+        class ChromeWritesStubbornDirectories(FakeLifecycle):
+            """A lifecycle whose start leaves a directory behind.
+
+            It stands in for Chrome, which creates directories in the
+            profile it is given.
+            """
+
+            def start(self, if_needed=False, timeout=180):
+                result = FakeLifecycle.start(
+                    self, if_needed=if_needed, timeout=timeout
+                )
+                stubborn = os.path.join(layout.chrome_dir, "Default", "Stubborn")
+                os.makedirs(stubborn, exist_ok=True)
+                with open(
+                    os.path.join(stubborn, "file"), "w", encoding="utf-8"
+                ) as handle:
+                    handle.write("x")
+                os.chmod(stubborn, 0o500)
+                return result
+
+        before = self._profile_marker()
+        lifecycle = ChromeWritesStubbornDirectories(
+            running=True, fail_health_at=1
+        )
+        self._record_the_rollback(lifecycle)
+
+        with self.assertRaises(CloudChromeError):
+            self._restore(lifecycle)
+
+        # The previous state is back, so the rollback itself worked.
+        self.assertEqual(self._profile_marker(), before)
+        self.assertTrue(lifecycle.running)
+        # Nothing is left over from the replacement.
+        leftovers = [
+            name
+            for name in os.listdir(self.layout.persist_dir)
+            if name.startswith(".cloudchrome-discarded.")
+            or name.startswith(".cloudchrome-restoring.")
+        ]
+        self.assertEqual(leftovers, [])
+
 
 class PayloadTest(StateCase):
     """What goes into a backup, and what does not."""

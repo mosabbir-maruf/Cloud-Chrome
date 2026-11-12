@@ -987,7 +987,17 @@ def _rollback(layout, rollback):
     for name, live in _swappable(layout):
         saved = os.path.join(rollback, name)
         if os.path.isdir(saved):
-            _replace_tree(saved, live)
+            discarded = _replace_tree(saved, live)
+            if discarded:
+                # The old tree could not be removed completely. It is kept
+                # and reported, rather than left silently.
+                logutil.append(
+                    layout.supervisor_log,
+                    "the replaced directory %s could not be removed completely; "
+                    "it is kept in %s" % (live, discarded),
+                    max_bytes=5242880,
+                    keep=3,
+                )
     saved_pass = os.path.join(rollback, "keyring.pass")
     if os.path.exists(saved_pass):
         if os.path.exists(layout.keyring_pass_file):
@@ -1002,13 +1012,80 @@ def _replace_tree(source, target):
     The copy is made beside the target and moved into place, so the target
     is never a partly copied directory and the source is never moved, so
     the rollback state keeps its copy of the previous data.
+
+    The old tree is **moved aside** rather than deleted, and the move into
+    place is a rename. A rename always works, even when the contents of
+    the old tree cannot be removed, which is what happens with the
+    directories Chrome creates that the runtime user cannot write into. A
+    removal alone would leave the old tree in place and the replacement
+    would fail.
+
+    Returns the path of the old tree when it could not be removed, and
+    None otherwise.
     """
-    temporary = target + ".restoring"
-    shutil.rmtree(temporary, ignore_errors=True)
+    parent = os.path.dirname(target) or "."
+    temporary = _unique_name(parent, ".cloudchrome-restoring.")
     shutil.copytree(source, temporary, symlinks=True)
-    if os.path.exists(target):
-        shutil.rmtree(target, ignore_errors=True)
+    if not os.path.exists(target):
+        os.replace(temporary, target)
+        return None
+
+    discarded = _unique_name(parent, ".cloudchrome-discarded.")
+    os.replace(target, discarded)
     os.replace(temporary, target)
+    # The old tree is removed afterwards. A tree that cannot be removed is
+    # reported rather than left silently.
+    if not _remove_tree(discarded):
+        return discarded
+    return None
+
+
+def _unique_name(parent, prefix):
+    """A path beside *parent* that does not exist yet."""
+    for _attempt in range(64):
+        candidate = tempfile.mkdtemp(prefix=prefix, dir=parent)
+        os.rmdir(candidate)
+        if not os.path.exists(candidate):
+            return candidate
+    raise CloudChromeError(
+        "cannot find a free name beside %s for the restore" % parent
+    )
+
+
+def _remove_tree(path):
+    """Remove a directory tree, whatever the permissions of its contents.
+
+    Chrome creates directories that the runtime user cannot write into, so
+    a plain removal fails on them. The permissions are restored for the
+    removal and the removal is retried.
+
+    Returns True when the tree is gone.
+    """
+
+    def on_error(function, entry, *args):
+        try:
+            # The entry itself may be a file that cannot be unlinked
+            # because its parent directory cannot be written into, so the
+            # parent is restored as well.
+            parent = os.path.dirname(entry)
+            if parent and not os.path.islink(parent):
+                os.chmod(parent, OWNER_ONLY_DIR)
+            if not os.path.islink(entry):
+                os.chmod(entry, OWNER_ONLY_DIR)
+            function(entry)
+        except OSError:
+            pass
+
+    if not os.path.exists(path):
+        return True
+    try:
+        shutil.rmtree(path, onexc=on_error)
+    except TypeError:
+        # Python before 3.12 spells the handler differently.
+        shutil.rmtree(path, onerror=on_error)
+    except OSError:
+        return False
+    return not os.path.exists(path)
 
 
 # ---------------------------------------------------------------------------
