@@ -2,7 +2,7 @@
 
 Security documentation for the dev container image: the enforced policies, the seccomp
 baseline and its derivation, the measured sandbox and privilege results, and the notes
-carried forward to later phases.
+carried forward.
 
 - Pinned versions, checksums and the seccomp baseline reference: `config/versions.env`.
 - Profile derivation and verification: `tests/probe/render-seccomp-profile.sh`.
@@ -419,7 +419,7 @@ system libraries around them are deliberately allowed to move with the archive.
 
 ## 6. SSHD feature — removed
 
-The `ghcr.io/devcontainers/features/sshd:1.1.0` feature was added during Phase 1 so that a
+The `ghcr.io/devcontainers/features/sshd:1.1.0` feature was added so that a
 custom-image Codespace could be reached with `gh codespace ssh` and so that its creation
 log could be downloaded. It was never needed for the measurements: the probe publishes its
 evidence through the repository API, and the Codespaces API routes for ports, logs and

@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Cloud-Chrome — Phase 3 runtime tests: persistence, keyring and backup.
+# Cloud-Chrome — the backup and restore test suite: the age identity, the
+# backup, the restore, the hostile archives, the rollback, the pruning and
+# the secret redaction.
 #
 # These tests run INSIDE the Cloud-Chrome image. They exercise the real
 # age-encrypted backup, the real restore with its rollback, and a set of
 # deliberately hostile archives that must be refused.
 #
-# Usage: bash tests/runtime/phase3-tests.sh
+# Usage: bash tests/runtime/backup-restore-tests.sh
 # Exit:  0 when every expectation holds, 1 otherwise.
 
 set -uo pipefail
 
-WORK=$(mktemp -d /tmp/cloudchrome-p3.XXXXXX)
+WORK=$(mktemp -d /tmp/cloudchrome-backup-restore.XXXXXX)
 export CLOUDCHROME_PERSIST_DIR="$WORK/state/.cloudchrome"
 export CLOUDCHROME_RUNTIME_DIR="$CLOUDCHROME_PERSIST_DIR/run"
 export HOME="$WORK/home"
@@ -89,7 +91,7 @@ printf 'the-marker' > "$state/chrome/Default/CloudChromeMarker"
 mkdir -p "$state/keyring"
 printf 'keyring-data' > "$state/keyring/login.keyring"
 
-"$CLI" backup --label "phase3 test" > "$WORK/backup.txt" 2>&1
+"$CLI" backup --label "backup restore test" > "$WORK/backup.txt" 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then
     pass "backup succeeds" "$(grep 'backup written' "$WORK/backup.txt")"
@@ -521,8 +523,8 @@ section "9. Result"
 # ---------------------------------------------------------------------------
 printf 'PASS: %d  FAIL: %d\n' "$PASS_COUNT" "$FAIL_COUNT"
 if [ "$FAIL_COUNT" -eq 0 ]; then
-    echo "all Phase 3 expectations hold"
+    echo "all the backup and restore expectations hold"
     exit 0
 fi
-echo "Phase 3 expectations failed"
+echo "the backup and restore expectations failed"
 exit 1

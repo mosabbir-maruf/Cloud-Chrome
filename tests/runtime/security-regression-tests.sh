@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Cloud-Chrome — Phase 4 runtime tests: the security audit and the failure
-# injection.
+# Cloud-Chrome — the security regression test suite: the file and directory
+# audit, the locks, the port exposure, the secret and logging audit, the
+# failure injection and the privilege audit.
 #
 # These tests run INSIDE the Cloud-Chrome image. They measure the security
 # boundaries and they inject real failures: a component is killed, a file is
 # made unreadable, a signal is delivered at the wrong moment.
 #
-# Usage: bash tests/runtime/phase4-tests.sh
+# Usage: bash tests/runtime/security-regression-tests.sh
 # Exit:  0 when every expectation holds, 1 otherwise.
 
 set -uo pipefail
 
-WORK=$(mktemp -d /tmp/cloudchrome-p4.XXXXXX)
+WORK=$(mktemp -d /tmp/cloudchrome-security.XXXXXX)
 export CLOUDCHROME_PERSIST_DIR="$WORK/state/.cloudchrome"
 export CLOUDCHROME_RUNTIME_DIR="$CLOUDCHROME_PERSIST_DIR/run"
 export HOME="$WORK/home"
@@ -505,8 +506,8 @@ section "7. Result"
 # ---------------------------------------------------------------------------
 printf 'PASS: %d  FAIL: %d\n' "$PASS_COUNT" "$FAIL_COUNT"
 if [ "$FAIL_COUNT" -eq 0 ]; then
-    echo "all Phase 4 expectations hold"
+    echo "all the security regression expectations hold"
     exit 0
 fi
-echo "Phase 4 expectations failed"
+echo "the security regression expectations failed"
 exit 1

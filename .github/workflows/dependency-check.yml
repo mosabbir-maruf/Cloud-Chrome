@@ -4,7 +4,7 @@ name: dependency-check
 # reviewable pull request. It NEVER modifies the default branch directly and it
 # never pushes to main.
 #
-# Scope note (Revision 5, D30): only Chrome is auto-updated. TigerVNC, noVNC
+# Scope note: only Chrome is auto-updated. TigerVNC, noVNC
 # and age bumps are reported here but are applied deliberately by a human,
 # because they also change a recorded SHA-256 that must be reviewed.
 

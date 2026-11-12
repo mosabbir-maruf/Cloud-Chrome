@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Cloud-Chrome — Phase 2 runtime unit and integration tests.
+# Cloud-Chrome — the runtime test suite: the CLI surface, the launch policy,
+# the network model, the supervisor's logic, the locks and the secret
+# service.
 #
 # These tests run INSIDE the Cloud-Chrome image. They exercise the CLI, the
 # supervisor, the password handling, the Chrome launch policy and the keyring
 # integration without needing a desktop to be visible.
 #
-# Usage: bash tests/runtime/phase2-tests.sh
+# Usage: bash tests/runtime/runtime-tests.sh
 # Exit:  0 when every expectation holds, 1 otherwise.
 
 set -uo pipefail
 
-WORK=$(mktemp -d /tmp/cloudchrome-p2.XXXXXX)
+WORK=$(mktemp -d /tmp/cloudchrome-runtime.XXXXXX)
 export CLOUDCHROME_PERSIST_DIR="$WORK/state/.cloudchrome"
 export CLOUDCHROME_RUNTIME_DIR="$WORK/state/.cloudchrome/run"
 export CLOUDCHROME_LOG_DIR="$WORK/state/.cloudchrome/logs"
@@ -458,8 +460,8 @@ section "10. Result"
 # ---------------------------------------------------------------------------
 printf 'PASS: %d  FAIL: %d\n' "$PASS_COUNT" "$FAIL_COUNT"
 if [ "$FAIL_COUNT" -eq 0 ]; then
-    echo "all Phase 2 expectations hold"
+    echo "all the runtime expectations hold"
     exit 0
 fi
-echo "Phase 2 expectations failed"
+echo "the runtime expectations failed"
 exit 1

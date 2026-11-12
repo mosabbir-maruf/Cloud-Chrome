@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Cloud-Chrome — Phase 3 corrective tests: the backup, the restore and the
-# transaction.
+# Cloud-Chrome — the backup transaction test suite: the backup, the restore
+# and the transaction.
 #
 # These tests run INSIDE the Cloud-Chrome image, because they need the age
 # tools and the real desktop stack.

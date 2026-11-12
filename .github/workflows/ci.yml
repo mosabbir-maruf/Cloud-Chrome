@@ -507,7 +507,7 @@ jobs:
           echo "ok       .dockerignore excludes personal data"
 
   runtime:
-    name: Runtime tests (Phase 2)
+    name: Desktop Runtime & Lifecycle Tests
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -575,8 +575,8 @@ jobs:
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
             -v "$PWD:/repo:ro" \
-            "$IMAGE_NAME" bash /repo/tests/runtime/phase2-tests.sh \
-            | tee "$RUNNER_TEMP/phase2.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+            "$IMAGE_NAME" bash /repo/tests/runtime/runtime-tests.sh \
+            | tee "$RUNNER_TEMP/runtime.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the installed CLI matches the repository
         run: |
@@ -606,7 +606,7 @@ jobs:
           echo "ok       the CLI runs in the image"
 
   backup:
-    name: Backup and restore tests (Phase 3)
+    name: Backup, Restore & Recovery Tests
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -632,10 +632,10 @@ jobs:
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
             -v "$PWD:/repo:ro" \
-            "$IMAGE_NAME" bash /repo/tests/runtime/phase3-tests.sh \
-            | tee "$RUNNER_TEMP/phase3.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+            "$IMAGE_NAME" bash /repo/tests/runtime/backup-restore-tests.sh \
+            | tee "$RUNNER_TEMP/backup-restore.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Run the backup and restore tests inside the image
+      - name: Run the backup transaction tests inside the image
         run: |
           set -euo pipefail
           # The backup, the restore and the transaction, with and without a
@@ -648,7 +648,7 @@ jobs:
             "$IMAGE_NAME" bash /repo/tests/runtime/backup-tests.sh \
             | tee "$RUNNER_TEMP/backup.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Run the persistence and keyring tests inside the image
+      - name: Run the profile and keyring tests inside the image
         run: |
           set -euo pipefail
           docker run --rm -i \
@@ -656,11 +656,11 @@ jobs:
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
             -v "$PWD:/repo:ro" \
-            "$IMAGE_NAME" bash /repo/tests/runtime/phase3-persistence-tests.sh \
-            | tee "$RUNNER_TEMP/phase3-persistence.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+            "$IMAGE_NAME" bash /repo/tests/runtime/profile-and-keyring-tests.sh \
+            | tee "$RUNNER_TEMP/profile-keyring.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
   hardening:
-    name: Security audit and failure injection (Phase 4)
+    name: Security Regression & Failure-Injection Tests
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -678,27 +678,27 @@ jobs:
           set -euo pipefail
           gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
 
-      - name: Run the security audit and failure injection inside the image
+      - name: Run the security regression and failure-injection tests inside the image
         run: |
           set -euo pipefail
           docker run --rm -i \
             -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-test/.cloudchrome \
             -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-test/.cloudchrome/run \
             -v "$PWD:/repo:ro" \
-            "$IMAGE_NAME" bash /repo/tests/runtime/phase4-tests.sh \
-            | tee "$RUNNER_TEMP/phase4.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+            "$IMAGE_NAME" bash /repo/tests/runtime/security-regression-tests.sh \
+            | tee "$RUNNER_TEMP/security-regression.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the seccomp regressions still hold
         run: |
           set -euo pipefail
-          # The Phase 4 hardening must not have weakened the sandbox: the
-          # whole Phase 1.1 regression suite runs again here.
+          # The hardening must not have weakened the sandbox: the whole
+          # seccomp regression suite runs again here.
           profile="$PWD/.devcontainer/seccomp/chrome.json"
           docker run --rm -i \
             --security-opt "seccomp=$profile" \
             -e CLOUDCHROME_PROFILE_LABEL="cloud-chrome profile" \
             "$IMAGE_NAME" bash -s < tests/probe/seccomp-regression.sh \
-            | tee "$RUNNER_TEMP/seccomp-phase4.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+            | tee "$RUNNER_TEMP/seccomp-regression.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the Chrome sandbox is still active in the image
         run: |

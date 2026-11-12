@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Cloud-Chrome — Phase 3 runtime tests: the persistent profile and the
-# keyring.
+# Cloud-Chrome — the profile and keyring test suite: the persistent
+# directories, the keyring store, the secret service with the stored
+# passphrase, the profile, the singleton lock and the privacy of the state.
 #
 # These tests run INSIDE the Cloud-Chrome image. They check that the layout
 # of the persistent state is stable, that the keyring data is on disk in the
@@ -12,12 +13,12 @@
 # measured by tests/runtime/persistence-tests.sh, not from here: this file
 # does not start the stack.
 #
-# Usage: bash tests/runtime/phase3-persistence-tests.sh
+# Usage: bash tests/runtime/profile-and-keyring-tests.sh
 # Exit:  0 when every expectation holds, 1 otherwise.
 
 set -uo pipefail
 
-WORK=$(mktemp -d /tmp/cloudchrome-p3p.XXXXXX)
+WORK=$(mktemp -d /tmp/cloudchrome-profile-keyring.XXXXXX)
 export CLOUDCHROME_PERSIST_DIR="$WORK/state/.cloudchrome"
 export CLOUDCHROME_RUNTIME_DIR="$CLOUDCHROME_PERSIST_DIR/run"
 export HOME="$WORK/home"
@@ -311,8 +312,8 @@ section "7. Result"
 # ---------------------------------------------------------------------------
 printf 'PASS: %d  FAIL: %d\n' "$PASS_COUNT" "$FAIL_COUNT"
 if [ "$FAIL_COUNT" -eq 0 ]; then
-    echo "all Phase 3 persistence expectations hold"
+    echo "all the profile and keyring expectations hold"
     exit 0
 fi
-echo "Phase 3 persistence expectations failed"
+echo "the profile and keyring expectations failed"
 exit 1

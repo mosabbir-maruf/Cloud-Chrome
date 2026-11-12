@@ -1,5 +1,5 @@
-"""Tests for the corrective pass: the limits, the output paths, the
-plaintext cleanup and the restore transaction.
+"""Tests for the backup and the restore: the limits, the output path, the
+plaintext cleanup, the payload, the restore transaction and the recovery.
 
 The transaction is exercised with a lifecycle that can be told to fail, so
 every failure path of the restore is measured rather than assumed.
@@ -104,7 +104,7 @@ class StateCase(unittest.TestCase):
     """A test case with a private state directory."""
 
     def setUp(self):
-        self.work = tempfile.mkdtemp(prefix="cloudchrome-corrective.")
+        self.work = tempfile.mkdtemp(prefix="cloudchrome-backup-restore.")
         self.addCleanup(shutil.rmtree, self.work, True)
         self.persist = os.path.join(self.work, ".cloudchrome")
         self.config = Config(
