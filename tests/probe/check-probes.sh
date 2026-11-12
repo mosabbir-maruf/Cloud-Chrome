@@ -48,7 +48,7 @@ else
 fi
 
 if command -v shellcheck > /dev/null 2>&1; then
-    if shellcheck --severity=warning tests/probe/*.sh tests/probe/lib/*.sh 2>/dev/null; then
+    if shellcheck -x --severity=warning tests/probe/*.sh tests/probe/lib/*.sh 2>/dev/null; then
         pass "the probes are lint clean"
     else
         fail "the probes are lint clean" "shellcheck reported something"

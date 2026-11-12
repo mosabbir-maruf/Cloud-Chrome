@@ -20,7 +20,7 @@ PROBE_OUTPUT="${CLOUDCHROME_PROBE_OUTPUT:-}"
 
 # The publishing machinery, the work directory and the statistics helpers
 # are shared with the performance probe.
-# shellcheck source=tests/probe/lib/probe-common.sh
+# shellcheck source=lib/probe-common.sh
 . "$PROBE_DIR/lib/probe-common.sh"
 
 kv() { printf '%-46s %s\n' "$1" "${2:-<empty>}"; }

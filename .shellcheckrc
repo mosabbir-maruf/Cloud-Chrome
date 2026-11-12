@@ -1,0 +1,4 @@
+# The source paths of the shell scripts are relative to the directory
+# of the script itself, so that a single file can be checked on its
+# own.
+source-path=SCRIPTDIR

@@ -22,7 +22,7 @@ PROBE_OUTPUT="${CLOUDCHROME_PROBE_OUTPUT:-}"
 
 # The work directory, the evidence file, the reporting helpers and the
 # publishing machinery are shared with the other probes.
-# shellcheck source=tests/probe/lib/probe-common.sh
+# shellcheck source=lib/probe-common.sh
 . "$PROBE_DIR/lib/probe-common.sh"
 
 # The workspace root is derived from this script's own location: Codespaces

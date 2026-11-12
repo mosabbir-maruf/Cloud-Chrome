@@ -23,7 +23,7 @@ PROBE_TITLE="Cloud-Chrome performance probe evidence"
 PROBE_EVIDENCE_NAME="performance-evidence.txt"
 PROBE_OUTPUT="${CLOUDCHROME_PERFORMANCE_OUTPUT:-}"
 
-# shellcheck source=tests/probe/lib/probe-common.sh
+# shellcheck source=lib/probe-common.sh
 . "$PROBE_DIR/lib/probe-common.sh"
 
 # The number of samples. The startup and the shutdown are sampled more
@@ -254,6 +254,11 @@ else
     original=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
     kv "the code of the checkout" "${original:0:7}"
     kv "the code of the comparison" "$(printf '%s' "$COMPARE_COMMIT" | cut -c1-7)"
+    if ! git -C "$REPO_ROOT" cat-file -e "$COMPARE_COMMIT^{commit}" 2>/dev/null; then
+        # A Codespace checkout is shallow, so the history is deepened
+        # before the comparison is given up on.
+        git -C "$REPO_ROOT" fetch --quiet --deepen 500 origin 2>/dev/null || true
+    fi
     if git -C "$REPO_ROOT" cat-file -e "$COMPARE_COMMIT^{commit}" 2>/dev/null; then
         if git -C "$REPO_ROOT" checkout --quiet "$COMPARE_COMMIT" -- lib 2>/dev/null; then
             measure_startup "the comparison"
