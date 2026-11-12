@@ -145,9 +145,11 @@ a shell history by accident.
 | `cloudchrome restore` | restore a backup as one transaction |
 | `cloudchrome prune` | delete the old backups, keeping a number of them |
 
-Every command but `init`, `status`, `doctor` and `version` takes the
-control lock, so a start, a stop, a backup and a restore never run at the
-same time.
+The commands that change the state — `start`, `stop`, `restart`, `backup`,
+`restore` and `prune` — take the control lock, so they never run at the
+same time as each other. `init`, `status`, `logs`, `doctor`, `passwd`,
+`url` and `version` only read the state, and they do not wait for the
+lock.
 
 `docs/USAGE.md` describes every command, every exit code and the layout
 of the state.
