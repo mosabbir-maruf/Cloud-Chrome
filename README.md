@@ -70,7 +70,13 @@ Codespaces compute and storage usage is billed under your account and quota.
 
 1. Open the [Cloud-Chrome repository](https://github.com/mosabbir-maruf/Cloud-Chrome).
 2. Select **Code** near the top of the repository page.
-3. Open the **Codespaces** tab in the menu.
+3. Select the **Codespaces** tab in the menu. The screenshot below shows where
+   to find it:
+
+   <p align="center">
+     <img src="public/codespace-open.png" alt="Open the Codespaces tab from the repository Code menu" width="400" />
+   </p>
+
 4. Select **Create codespace on main**. If GitHub asks you to choose a
    machine, select one that meets the project's resource requirements.
 5. Wait for the Codespace to be created. It uses the published
