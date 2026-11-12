@@ -23,9 +23,10 @@ issues in this repository.
 |---|---|---|---|
 | 1 | The image builds from a pinned base image | `docker build` with the digest from `config/versions.env` | CI, "Build and verify the image" |
 | 2 | The static validation passes | shellcheck, hadolint, actionlint, the JSON documents, the version pins, the seccomp profile against its upstream baseline, the unit tests | CI, "Static validation" |
-| 3 | The unit tests pass | `python3 -m unittest discover` — 134 tests, run both on the runner and inside the image, where the `age` tools are present and the restore tests are not skipped | CI, "Static validation" and "Build and verify the image" |
+| 3 | The unit tests pass | `python3 -m unittest discover` — 137 tests. On the bare runner **19 are skipped**, because the runner does not have the `age` tools and the restore tests need them. Inside the built image all **137 run and none is skipped**, because `age` is part of the image | CI, "Static validation" (the runner, with skips) and "Build and verify the image" (inside the image, with no skips) |
 | 4 | The desktop stack comes up and goes down | the supervisor, Xvnc, D-Bus, the Keyring, XFCE, the noVNC bridge and Chrome are started, checked and stopped; no duplicate is left behind | CI, "Runtime tests (Phase 2)"; the runtime probe |
-| 5 | The stack survives a stop and a start, and a restart of the container | the profile and the keyring are in the persistent state directory | CI, "Runtime tests (Phase 2)" |
+| 5 | The state survives a real stop and a real start of the desktop stack | the complete stack is started, a synthetic profile marker is written and a synthetic item is stored in the Secret Service, the stack is stopped, it is started again with the same persistent state directory, and the marker, the Secret Service item and the keyring store are checked afterwards | CI, the persistent state test inside the image |
+| 5b | The state outlives a rebuild of the Codespace | **not** tested: no rebuild has been performed end to end. The design puts the state on the persistent volume, and the measurement above covers a stop and a start of the runtime | **Pending**, see the human list |
 | 6 | The security regression tests pass | the namespace flags, the socket domains, the `socketcall` compatibility path, the ASLR request, the capabilities, the forbidden Chrome flags, the DevTools port, the secret service, the VNC password file and its live replacement | CI, "Security audit and failure injection (Phase 4)"; the sandbox probe |
 | 7 | Chrome's sandbox is active | every zygote and renderer has `NoNewPrivs=1` and `Seccomp=2`, and the renderers run in a different user namespace | CI, "Build and verify the image"; the runtime probe |
 | 8 | The processes are cleaned up | after a stop, no supervised process is left; the pid files are removed; after a `SIGTERM` the supervisor exits, removes its pid file and leaves no component behind | CI, "Runtime tests (Phase 2)" and "Security audit and failure injection (Phase 4)" |
@@ -57,7 +58,7 @@ browser and a look at the screen.
 | 4 | Visit a normal website | The page loads over the network | **Pending** |
 | 5 | Verify the Google website sign-in separately from the Chrome browser sign-in | The managed policy sets `BrowserSignin: 0` and `SyncDisabled: true`, which are **browser-level** controls. They do not and cannot block a sign-in to a *website*. Whether a Google website sign-in works in the desktop is a separate question, and it is **not** verified | **Pending** |
 | 6 | Verify that the website session survives a stop and a start | Sign in, `cloudchrome stop`, `cloudchrome start`, and the session is still there | **Pending** |
-| 7 | Verify the profile and the keyring across an actual Codespaces rebuild | Rebuild the Codespace and check that the profile, the keyring and the backups are still there. The design puts them on the persistent volume; **no rebuild has been performed end to end** | **Pending** |
+| 7 | Verify the profile and the keyring across an actual Codespaces rebuild | Rebuild the Codespace and check that the profile, the keyring and the backups are still there. The design puts them on the persistent volume, and a **runtime** stop and start is measured automatically (item 5), but **no rebuild has been performed end to end** | **Pending** |
 
 ### Why these are pending and not done
 
@@ -73,6 +74,8 @@ complete on the strength of an HTTP status code.
 | | |
 |---|---|
 | The automated items | verified by the CI run and the published Codespaces evidence: issue [#41](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/41) for the runtime and issue [#40](https://github.com/mosabbir-maruf/Cloud-Chrome/issues/40) for the performance |
+| The runtime stop and start of the state | **verified** by the persistent state test, inside the image |
+| The rebuild of the Codespace | **not** verified; it is one of the seven pending human items |
 | The human items | **all seven are pending** |
 | The known host-level limitation | unresolved; it needs a host-level control and it is documented in `docs/SECURITY.md` |
 

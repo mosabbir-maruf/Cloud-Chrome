@@ -552,6 +552,20 @@ jobs:
             "$IMAGE_NAME" bash /repo/tests/runtime/stack-tests.sh \
             | tee "$RUNNER_TEMP/stack.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Run the persistent state test inside the image
+        run: |
+          set -euo pipefail
+          # The profile and the Secret Service item have to survive a real
+          # stop and a real start of the desktop stack, with the same
+          # persistent state directory. Only synthetic data is used.
+          docker run --rm -i \
+            --security-opt "seccomp=$PWD/.devcontainer/seccomp/chrome.json" \
+            -e CLOUDCHROME_PERSIST_DIR=/tmp/cloudchrome-persist/.cloudchrome \
+            -e CLOUDCHROME_RUNTIME_DIR=/tmp/cloudchrome-persist/.cloudchrome/run \
+            -v "$PWD:/repo:ro" \
+            "$IMAGE_NAME" bash /repo/tests/runtime/persistence-tests.sh \
+            | tee "$RUNNER_TEMP/persist.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Run the runtime test suite inside the image
         run: |
           set -euo pipefail

@@ -2,10 +2,15 @@
 # Cloud-Chrome — Phase 3 runtime tests: the persistent profile and the
 # keyring.
 #
-# These tests run INSIDE the Cloud-Chrome image. They check that the Chrome
-# profile and the keyring data survive a stop and a start, that the secret
-# service is genuinely used by Chrome, and that the keyring is unlocked with
-# the stored passphrase rather than with a new one.
+# These tests run INSIDE the Cloud-Chrome image. They check that the layout
+# of the persistent state is stable, that the keyring data is on disk in the
+# store the daemon uses, that the secret service works with the stored
+# passphrase, and that the keyring is unlocked with that passphrase rather
+# than with a new one.
+#
+# The profile surviving a real stop and a start of the desktop stack is
+# measured by tests/runtime/persistence-tests.sh, not from here: this file
+# does not start the stack.
 #
 # Usage: bash tests/runtime/phase3-persistence-tests.sh
 # Exit:  0 when every expectation holds, 1 otherwise.
@@ -52,12 +57,22 @@ layout.initialize()
 print("persist=%s" % layout.persist_dir)
 print("chrome=%s" % layout.chrome_dir)
 print("keyring=%s" % layout.keyring_dir)
+print("keyring_store=%s" % layout.keyring_store_dir)
 print("pass=%s" % layout.keyring_pass_file)
 PY
 
 grep -q "persist=$state" "$WORK/layout.txt" \
     && pass "the state directory follows the configured path" \
     || fail "the state directory follows the configured path" "$(grep persist= "$WORK/layout.txt")"
+
+# The GNOME Keyring store is the directory the keyring daemon is told to
+# use. The legacy "keyring" directory beside it holds nothing.
+KEYRING_STORE=$(sed -n 's/^keyring_store=//p' "$WORK/layout.txt")
+if [ -n "$KEYRING_STORE" ]; then
+    pass "the keyring store is the directory the daemon uses" "$KEYRING_STORE"
+else
+    fail "the keyring store is the directory the daemon uses"
+fi
 
 # A marker in the profile must survive.
 mkdir -p "$state/chrome/Default"
@@ -170,18 +185,31 @@ else
     fail "the secret service stores and returns a secret" "$(grep REASON "$WORK/secret.txt" | head -1)"
 fi
 
-# The keyring data must be on disk in the persistent directory, not in the
-# home directory, so that it survives a rebuild.
-if [ -d "$state/keyring" ]; then
-    found=$(find "$state/keyring" -type f 2>/dev/null | wc -l)
+# The keyring data must be on disk in the store the daemon was told to
+# use, so that it survives a rebuild.
+#
+# The secret service has just stored and read back a secret, so the store
+# has to exist and to hold the keyring. A missing keyring file is a
+# failure: it is not a state that can be passed.
+if [ -n "$KEYRING_STORE" ] && [ -d "$KEYRING_STORE" ]; then
+    found=$(find "$KEYRING_STORE" -type f 2>/dev/null | wc -l)
     if [ "$found" -gt 0 ]; then
-        pass "the keyring data is in the persistent directory" "$found file(s)"
+        pass "the keyring data is in the persistent directory" \
+            "$found file(s) in $(basename "$(dirname "$KEYRING_STORE")")/$(basename "$KEYRING_STORE")"
     else
-        note "the keyring data is in the persistent directory" "no file yet (the daemon writes it on first use)"
-        pass "the keyring data is in the persistent directory"
+        fail "the keyring data is in the persistent directory" \
+            "the store is empty"
     fi
 else
-    fail "the keyring data is in the persistent directory"
+    fail "the keyring data is in the persistent directory" \
+        "the store does not exist: $KEYRING_STORE"
+fi
+
+# The login keyring is the file the daemon creates when it unlocks.
+if [ -f "$KEYRING_STORE/login.keyring" ]; then
+    pass "the login keyring is in the store"
+else
+    fail "the login keyring is in the store" "$KEYRING_STORE/login.keyring"
 fi
 
 if find "$HOME" -name 'login.keyring' 2>/dev/null | grep -q .; then
@@ -191,11 +219,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-section "4. The profile survives a stop and a start"
+section "4. A repeated initialisation does not touch the profile"
 # ---------------------------------------------------------------------------
-# The runtime is not started here (that needs a display), so the check is
-# done on the layout: the profile lives in the persistent directory and a
-# second init does not touch it.
+# The runtime is not started here, so this is **not** a proof that the
+# profile survives a stop and a start. It only shows that the layout is
+# stable: a second init creates nothing and touches nothing. The real
+# stop and start is measured by tests/runtime/persistence-tests.sh, which
+# starts the whole desktop stack.
 python3 - <<'PY' > "$WORK/profile.txt" 2>&1
 import os, sys
 sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
@@ -209,15 +239,15 @@ print("initialised_twice=yes")
 PY
 
 if [ -f "$state/chrome/Default/Cookies" ] && [ "$(cat "$state/chrome/Default/Cookies")" = "a-cookie-value" ]; then
-    pass "the profile survives a repeated initialisation"
+    pass "the profile is untouched by a repeated initialisation"
 else
-    fail "the profile survives a repeated initialisation"
+    fail "the profile is untouched by a repeated initialisation"
 fi
 
 if [ -f "$state/chrome/Default/Preferences" ] && [ "$(cat "$state/chrome/Default/Preferences")" = "a-preference" ]; then
-    pass "the profile preferences survive a repeated initialisation"
+    pass "the profile preferences are untouched by a repeated initialisation"
 else
-    fail "the profile preferences survive a repeated initialisation"
+    fail "the profile preferences are untouched by a repeated initialisation"
 fi
 
 # The profile must not be in the home directory either.
@@ -265,13 +295,14 @@ grep -q "second_supervisor_blocked=True" "$WORK/singleton.txt" \
 # ---------------------------------------------------------------------------
 section "6. The state directory is private"
 # ---------------------------------------------------------------------------
-for path in "$state" "$state/chrome" "$state/keyring" "$state/logs" "$state/backups" "$state/keys"; do
+for path in "$state" "$state/chrome" "$state/xdg" "$KEYRING_STORE" "$state/logs" "$state/backups" "$state/keys"; do
     mode=$(stat -c '%a' "$path" 2>/dev/null || echo "?")
     owner=$(stat -c '%u' "$path" 2>/dev/null || echo "?")
+    label=$(basename "$path")
     if [ "$mode" = "700" ] && [ "$owner" = "$(id -u)" ]; then
-        pass "$(basename "$path") directory is private"
+        pass "the $label directory is private"
     else
-        fail "$(basename "$path") directory is private" "mode=$mode owner=$owner"
+        fail "the $label directory is private" "mode=$mode owner=$owner"
     fi
 done
 

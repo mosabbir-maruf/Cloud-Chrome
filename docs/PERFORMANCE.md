@@ -28,10 +28,22 @@ files. The real `.cloudchrome` directory is never read, copied, backed up
 or restored, and no cookie, no browsing history, no password, no age
 identity, no passphrase and no VNC credential is ever in the evidence.
 
-**The samples.** The startup and the shutdown are sampled ten times, the
-backup and the restore five times, and the warm start ten times. Every
-sample is a complete operation: the startup is a stop, a start and a wait
-until the desktop reports itself healthy; the shutdown is a stop and a
+**The samples.** The counts differ from one measurement to the next, and
+they are stated here so that no number is read as more precise than it is:
+
+| Measurement | Samples |
+|---|---|
+| The startup | 10 |
+| The shutdown | 10 |
+| The warm start | 10 |
+| The backup | 5 |
+| The restore | 5 |
+| The noVNC latency | 10 requests in one run |
+| The memory | one measurement, after the desktop has settled |
+| The idle CPU | one window of 30 seconds |
+
+Every sample is a complete operation: the startup is a stop, a start and a
+wait until the desktop reports itself healthy; the shutdown is a stop and a
 wait until every supervised process has exited; the backup and the
 restore are whole commands.
 
@@ -78,8 +90,8 @@ below is the runtime of the container.
 | The runtime | Cloud-Chrome 2.0.0 |
 | Chrome | 157.0.8103.50 |
 | The user | `vscode`, uid 1000 |
-| The image | 662 221 650 bytes uncompressed (631 MiB) |
-| The build duration | 126 s on the CI runner, with the package cache warm |
+| The image | 662 223 923 bytes uncompressed (631 MiB) |
+| The build duration | 104 s on the CI runner, with the package cache warm |
 
 The machine type is not reported inside the container, so it was taken
 from the request that created the Codespace. The measured CPU count and

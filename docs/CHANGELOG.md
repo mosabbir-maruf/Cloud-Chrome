@@ -96,12 +96,14 @@ its health checks.
 
 ### The performance
 
-Measured in a real Codespace on the `basicLinux32gb` machine, with the
-median of at least ten samples. The startup of the desktop is about
-2.2 s, the shutdown about half a second to a second, the desktop holds
-about 360 MiB of proportional set size, it uses about 4 % of one CPU
-while it is idle, the noVNC client answers in about 4 ms, a backup takes
-about 5 s and a restore about 4 s.
+Measured in a real Codespace on the `basicLinux32gb` machine. The startup,
+the shutdown and the warm start use ten samples each, the backup and the
+restore five each, and the memory, the idle CPU and the latency are
+measured once over a window. The startup of the desktop is about 2.5 s,
+the shutdown about half a second to a second, the desktop holds about
+360 MiB of proportional set size, it uses about 4 % of one CPU while it
+is idle, the noVNC client answers in about 4 ms, a backup takes about
+5 s and a restore about 4 s.
 
 The startup was halved by removing the waiting from it: a fixed sleep
 after Chrome became a condition, and the polls that waited for the state
@@ -111,10 +113,12 @@ methodology and the before-and-after are in `docs/PERFORMANCE.md`.
 
 ### The known limitations
 
-- **The host-level syscall limitation is unresolved.** The `int 0x80`
+- **The host-level syscall limitation is unresolved.** The native socket
+  path is filtered by the seccomp profile, but the `int 0x80`
   compatibility path reaches `socketcall(2)`, which cannot be filtered by
   a seccomp rule, and `/proc/sys/abi/ia32_emulation` is a global sysctl
-  that is not exposed inside the container. Cloud-Chrome does **not**
+  that is not exposed inside the container. Removing `socketcall` from the
+  allow-list does **not** close that path. Cloud-Chrome does **not**
   claim complete syscall isolation on a host where this is unresolved.
 - **Overwriting a file and unlinking it is not secure erasure.** On
   storage with copy-on-write, wear levelling or snapshots, the old

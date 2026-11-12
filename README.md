@@ -41,8 +41,11 @@ cloudchrome url         # the noVNC URL of this Codespace
   keeps them as well, because the volume is what holds them; that last
   one is the design, and no rebuild has been performed end to end yet.
 - **The secrets stay secret.** The VNC password, the keyring passphrase
-  and the encryption identity are private files, never printed into a log
-  and never in a backup.
+  and the encryption identity are private files, and they are never printed
+  into a log or into the output of a command that is not explicitly asked
+  for. The keyring passphrase **is** in an encrypted backup, because a
+  backup has to be able to unlock the keyring it restores; the VNC
+  password and the age identity are not in one.
 - **A backup is a transaction.** A restore is validated, staged, installed,
   verified and started as one operation under one lock. A failure puts the
   previous state back.
@@ -207,9 +210,11 @@ number of its members and the size of its manifest are all limited.
 
 **The age identity is not in the backup.** It lives in
 `.cloudchrome/keys/backup-identity.txt` and it is the only thing that can
-decrypt the archive. **Copy it somewhere safe, outside the Codespace.**
-If you delete the Codespace without having copied the identity and the
-backups, the backups cannot be recovered by anyone.
+decrypt the archive. **Export it and keep it somewhere safe, outside the
+Codespace** — for example in a password manager, or in an encrypted
+repository of your own. If you delete the Codespace without having
+exported the identity and the backups, the backups cannot be recovered by
+anyone: the archive is authenticated, and the wrong identity is refused.
 
 The VNC password is not in the backup either. It is rotated with
 `cloudchrome passwd`.
@@ -237,9 +242,13 @@ inside the container:
   sandbox. `--no-sandbox` is refused, and so is every other flag that
   would weaken the browser.
 - **A seccomp profile** that is narrower than the Docker default: the
-  32-bit `socketcall` compatibility entry point is removed, and the
   namespace and clone flags Chromium actually performs are the only ones
-  allowed.
+  allowed, and the native socket path is filtered by socket family and
+  domain. The 32-bit `socketcall` entry point is removed from the
+  allow-list as well, which is stricter than upstream — but that does
+  **not** close the compatibility ABI. The x86_64 `int 0x80` path still
+  reaches `socketcall(2)`, whose socket domain sits behind a pointer and
+  therefore cannot be filtered. See the limitation below.
 - **No capabilities.** The container has no `CAP_SYS_ADMIN`, and the
   runtime never asks for one.
 - **No runtime privilege escalation.** There is no `sudo` rule for the
@@ -259,14 +268,18 @@ inside the container:
 
 ## Known limitations
 
-**The host-level syscall limitation is not resolved.** The
-`int 0x80` compatibility path reaches `socketcall(2)`, whose socket domain
-is behind a pointer and therefore cannot be filtered by a seccomp rule.
-The profile removes the allowance, which is stricter than the upstream
-default, but it does not close the entry point. Closing it needs
-`ia32_emulation=0`, and `/proc/sys/abi/ia32_emulation` is a global,
-non-namespaced sysctl that is not exposed inside the container. It needs a
-host-level control.
+**The host-level syscall limitation is not resolved.** The native socket
+path is filtered by the seccomp profile, but the x86_64 `int 0x80`
+compatibility path reaches `socketcall(2)`, whose socket domain is behind
+a pointer and therefore cannot be filtered by a seccomp rule. Removing
+`socketcall` from the allow-list removes the direct native entry point,
+which is stricter than the upstream default, but it does **not** close the
+compatibility ABI and it does not stop the compatibility path from
+reaching the kernel: the container's filter does not cover the
+compatibility syscall architecture, so the allowance is not consulted
+there. Closing that needs `ia32_emulation=0`, and
+`/proc/sys/abi/ia32_emulation` is a global, non-namespaced sysctl that is
+not exposed inside the container. It needs a host-level control.
 
 **Cloud-Chrome therefore does not claim complete syscall isolation on a
 host where this remains unresolved**, and it is not a production-security
@@ -285,12 +298,14 @@ Two more, for honesty:
 
 ## Performance
 
-Measured on the `basicLinux32gb` Codespace (2 CPUs, 8 GB), with the
-median and the p95 of at least ten samples:
+Measured on the `basicLinux32gb` Codespace (2 CPUs, 8 GB). The startup,
+the shutdown and the warm start use ten samples each, the backup and the
+restore five each, and the memory, the idle CPU and the latency are
+measured once over a window:
 
 | | |
 |---|---|
-| the startup of the desktop | about 2.5 s, down from about 4.9 s |
+| the startup of the desktop | about 2.5 s, down from about 4.8 s |
 | the shutdown | about 0.5 s to 1.0 s |
 | the memory of the desktop | about 360 MiB of proportional set size |
 | the idle CPU of the desktop | about 4 % of one CPU |
@@ -299,7 +314,9 @@ median and the p95 of at least ten samples:
 | a restore | about 4 s |
 
 `docs/PERFORMANCE.md` has the methodology, the raw samples, the
-before-and-after of the optimisation and the remaining bottlenecks.
+before-and-after of the optimisation and the remaining bottlenecks. The
+image is 631 MiB uncompressed and builds in about a hundred seconds on a
+CI runner with a warm package cache.
 
 ---
 

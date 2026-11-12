@@ -349,7 +349,7 @@ variable.
 
 | Metric | Value |
 |---|---|
-| Uncompressed image size | 662 197 906 bytes (631 MiB) |
+| Uncompressed image size | 662 223 923 bytes (631 MiB) |
 | Runtime user | `vscode` (uid 1000) |
 
 ---
