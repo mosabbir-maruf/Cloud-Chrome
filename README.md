@@ -38,9 +38,7 @@ cloudchrome url         # the noVNC URL of this Codespace
   forwarded port; the raw RFB port never leaves the container.
 - **The state outlives the container.** The Chrome profile, the GNOME
   Keyring and the backups live on the Codespaces persistent volume, so
-  they are there when the container is replaced. A rebuild of the image
-  keeps them as well, because the volume is what holds them; that last
-  one is the design, and no rebuild has been performed end to end yet.
+  they remain in the Codespaces workspace when its container is rebuilt.
 - **The secrets stay secret.** The VNC password, the keyring passphrase
   and the encryption identity are private files, and they are never printed
   into a log or into the output of a command that is not explicitly asked
@@ -55,12 +53,10 @@ cloudchrome url         # the noVNC URL of this Codespace
 
 ## Screenshots
 
-The desktop is a real one, and this is what the browser shows.
-
-| **Chrome Browser** | **Linux Desktop** |
+| **Linux Desktop** | **Chrome Browser** |
 |---|---|
-| <img src="public/chrome-screenshot.webp" alt="Google Chrome running inside the Cloud-Chrome desktop, showing a new tab page" width="100%" /> | <img src="public/os-screenshot.webp" alt="The XFCE desktop environment of the Cloud-Chrome Codespace, with the top panel, the desktop icons and the dock" width="100%" /> |
-| Google Chrome running inside Cloud-Chrome. | The Linux desktop environment running inside the Codespace. |
+| <img src="public/os-screenshot.webp" alt="The XFCE desktop environment of the Cloud-Chrome Codespace, with the top panel, the desktop icons and the dock" width="100%" /> | <img src="public/chrome-screenshot.webp" alt="Google Chrome running inside the Cloud-Chrome desktop, showing a new tab page" width="100%" /> |
+| The Linux desktop environment running inside the Codespace. | Google Chrome running inside Cloud-Chrome. |
 
 ---
 
@@ -83,10 +79,27 @@ The order matters. The Secret Service has to answer before Chrome starts,
 because Chrome stores its passwords there and a locked keyring would make
 every credential fail.
 
-The components live in the dev container image
-(`.devcontainer/Dockerfile`), which is built by GitHub Actions and pinned
-by digest. The runtime never downloads anything and never runs anything
-with more privilege than the user.
+The official prebuilt image is
+[`ghcr.io/mosabbir-maruf/cloud-chrome:latest`](https://github.com/mosabbir-maruf/Cloud-Chrome/pkgs/container/cloud-chrome).
+Codespaces pull it instead of building the Dockerfile locally. GitHub
+Actions updates it after image-affecting changes reach `main` and all
+required CI and security tests pass; documentation-only and unrelated
+test-only changes do not publish a new image. The package retains only the
+current image version. The Dockerfile remains the source used by CI to
+build and test the image before publication.
+
+An existing Codespace keeps its current container when `latest` changes.
+Rebuild the Codespace container to receive the newer image. Each user still
+has a separate Codespace and separate persistent profile and keyring.
+Codespaces compute billing still applies. For anonymous pulls after a public
+launch, the owner must explicitly set the GHCR package visibility to Public;
+this change does not alter repository or package visibility. GitHub may block
+deletion of a public package version after it exceeds 5,000 downloads; in that
+case the workflow reports incomplete retention and preserves the blocked
+version rather than claiming that cleanup succeeded.
+
+The runtime never downloads dependencies and never runs anything with more
+privilege than the user.
 
 The code is in `lib/cloudchrome/`, and `bin/cloudchrome` is the only entry
 point. `docs/SECURITY.md` describes the isolation in full.
@@ -327,8 +340,8 @@ measured once over a window:
 
 `docs/PERFORMANCE.md` has the methodology, the raw samples, the
 before-and-after of the optimisation and the remaining bottlenecks. The
-image is 631 MiB uncompressed and builds in about a hundred seconds on a
-CI runner with a warm package cache.
+image is 631 MiB uncompressed. CI builds it once, tests that image across
+the pipeline, and publishes that tested artifact when image inputs change.
 
 ---
 
