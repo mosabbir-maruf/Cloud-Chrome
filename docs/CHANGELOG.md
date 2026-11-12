@@ -28,6 +28,12 @@ The order is the security property: the Secret Service has to answer
 before Chrome starts, and a keyring that cannot be unlocked is an error
 rather than a degraded mode.
 
+**A supervisor that is stopped takes its components with it.** A stop
+request stops the supervisor *and* everything the supervisor started, so
+no orphaned desktop is left behind. A stop request that arrives while the
+stack is still coming up is honoured as well: the waits of the startup
+honour it, including the wait for the Secret Service.
+
 Everything lives in the dev container image, which is built by GitHub
 Actions and pinned by digest. The runtime downloads nothing, asks for no
 capability, and never shells out to `sudo`.
