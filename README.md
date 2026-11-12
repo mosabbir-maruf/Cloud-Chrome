@@ -1,5 +1,10 @@
 # Cloud-Chrome
 
+### A private Linux desktop with Google Chrome, running in your GitHub Codespace.
+
+Use Chrome from a browser through the Codespaces port panel. No local Docker,
+Linux, or VS Code installation is required.
+
 [![Docker image](https://img.shields.io/badge/GHCR-cloud--chrome-blue?logo=docker)](https://github.com/orgs/mosabbir-maruf/packages/container/package/cloud-chrome)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![XFCE](https://img.shields.io/badge/XFCE-desktop-2284F2?logo=xfce&logoColor=white)](https://www.xfce.org/)
@@ -8,9 +13,7 @@
 [![GNOME Keyring](https://img.shields.io/badge/GNOME-Keyring-4A86CF?logo=gnome&logoColor=white)](https://wiki.gnome.org/Projects/GnomeKeyring)
 [![Google Chrome](https://img.shields.io/badge/Google-Chrome-4285F4?logo=googlechrome&logoColor=white)](https://www.google.com/chrome/)
 
-Cloud-Chrome gives you a Linux desktop with Google Chrome in your own GitHub
-Codespace. You connect from an ordinary browser through the Codespaces port
-panel. You do not need Docker, Linux, or VS Code installed on your computer.
+**Browser-based access · Persistent Codespace profile · Encrypted backups**
 
 The desktop runs Xvnc, XFCE, GNOME Keyring, noVNC and Chrome inside the
 Codespace. The only forwarded desktop interface is port `6080`; the raw VNC
@@ -237,10 +240,10 @@ syscall isolation or a production-security guarantee on hosts where this
 remains unresolved. See [Security](docs/SECURITY.md) for measured evidence
 and limitations.
 
-## Documentation index
+## Documentation
 
-The deeper architecture, evidence, and operational details remain in the
-linked documents; the quick start above is sufficient for a first use.
+Start with the quick start above, or use the guides below for operational
+details and project evidence.
 
 | Document | Contents |
 |---|---|
@@ -251,6 +254,8 @@ linked documents; the quick start above is sufficient for a first use.
 | [Performance](docs/PERFORMANCE.md) | Measurement method and performance results. |
 | [Changelog](docs/CHANGELOG.md) | Runtime release notes. |
 | [Release checklist](docs/RELEASE.md) | Owner launch and release checks. |
+
+---
 
 ## Contributing
 
@@ -274,3 +279,7 @@ trademarks remain with their owners. The screenshots show third-party
 interfaces and branding and are not claimed as Cloud-Chrome-owned software
 or as covered third-party material. Consult the respective project and
 vendor notices for their licensing and usage terms.
+
+<p align="center">
+  <sub>Cloud-Chrome · A browser-accessible desktop in GitHub Codespaces</sub>
+</p>
