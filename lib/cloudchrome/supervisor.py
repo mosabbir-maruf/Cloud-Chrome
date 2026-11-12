@@ -576,6 +576,10 @@ class Supervisor:
                     self.stop_all()
                     return 1
             time.sleep(0.5)
+        # A stop request leaves nothing behind: the components the
+        # supervisor started are stopped with it. A supervisor that exits
+        # without them leaves an orphaned desktop behind.
+        self.stop_all()
         return 0
 
     # --- entry point --------------------------------------------------------

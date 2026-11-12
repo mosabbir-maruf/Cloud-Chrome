@@ -29,6 +29,7 @@ from cloudchrome.errors import (  # noqa: E402
     IntegrityError,
     InvalidStateError,
 )
+from cloudchrome import procs  # noqa: E402
 from cloudchrome.paths import Layout  # noqa: E402
 
 # The age tools are part of the image, not of every development machine. The
@@ -718,6 +719,72 @@ class RestoreRecoveryTest(BackupFixture):
             or name.startswith(".cloudchrome-restoring.")
         ]
         self.assertEqual(leftovers, [])
+
+
+@unittest.skipUnless(
+    os.path.isdir("/proc"), "the process table of this system is not readable"
+)
+class ProcessTableTest(unittest.TestCase):
+    """The process table: a child that has exited is gone.
+
+    A child that has exited but has not been reaped is a zombie. The
+    process itself is gone, but its entry is still in the process table,
+    and waiting for it waits for nothing.
+    """
+
+    def _zombie(self):
+        """A child that has exited and has not been reaped."""
+        import time
+
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if procs.pid_alive(pid):
+                # The entry is there: the child is a zombie.
+                break
+            time.sleep(0.02)
+        self.addCleanup(self._reap, pid)
+        return pid
+
+    @staticmethod
+    def _reap(pid):
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            pass
+
+    def test_a_zombie_is_reported_as_exited(self):
+        pid = self._zombie()
+        self.assertTrue(procs.pid_alive(pid))
+        self.assertTrue(procs.pid_exited(pid))
+
+    def test_the_terminate_does_not_wait_for_a_zombie(self):
+        import time
+
+        from cloudchrome import procs
+
+        pid = self._zombie()
+        started = time.monotonic()
+        gone = procs.terminate(pid, timeout=30)
+        elapsed = time.monotonic() - started
+        self.assertTrue(gone)
+        self.assertLess(
+            elapsed,
+            5.0,
+            "the terminate waited for a zombie that was already gone",
+        )
+
+    def test_a_running_process_is_not_reported_as_exited(self):
+        import subprocess
+        import sys
+
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(process.kill)
+        self.addCleanup(process.wait)
+        self.assertTrue(procs.pid_alive(process.pid))
+        self.assertFalse(procs.pid_exited(process.pid))
 
 
 class PayloadTest(StateCase):

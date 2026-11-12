@@ -455,6 +455,11 @@ grep -q "supervisors_left=0" "$WORK/sigterm.txt" \
     && pass "no supervisor is left running after SIGTERM" \
     || fail "no supervisor is left running after SIGTERM"
 
+grep -q "components_left=0" "$WORK/sigterm.txt" \
+    && pass "no component is left running after SIGTERM" \
+    || fail "no component is left running after SIGTERM" \
+        "$(sed -n 's/^components_left=//p' "$WORK/sigterm.txt")"
+
 # ---------------------------------------------------------------------------
 section "6. The privilege audit"
 # ---------------------------------------------------------------------------

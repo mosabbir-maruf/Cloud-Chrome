@@ -56,6 +56,37 @@ def pid_alive(pid):
     return True
 
 
+def pid_exited(pid):
+    """True when the process has exited, even if it has not been reaped.
+
+    A child that has exited but has not been reaped is a zombie: the
+    process itself is gone, but its entry is still in the process table.
+    Waiting for a zombie is waiting for nothing, and a wait that ends
+    only when the timeout expires turns a stop into a stall.
+    """
+    if not pid_alive(pid):
+        return True
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        # The entry is not in the process table: the process is gone.
+        return True
+    except OSError:
+        # The process table cannot be read, so nothing can be said.
+        return False
+    try:
+        index = data.rindex(b")")
+    except ValueError:
+        return False
+    fields = data[index + 2:].split()
+    if not fields:
+        return False
+    # The first field after the command name is the state, and "Z" is the
+    # state of a zombie.
+    return fields[0] == b"Z"
+
+
 def pid_matches(pid, start_time):
     """True when *pid* is running and has the recorded start time.
 
@@ -203,25 +234,25 @@ def terminate(pid, start_time=None, timeout=10.0, label=""):
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not pid_alive(pid):
+        if pid_exited(pid):
             break
         time.sleep(0.1)
 
     for target in targets:
-        if pid_alive(target):
+        if not pid_exited(target):
             try:
                 os.kill(target, signal.SIGKILL)
             except OSError:
                 pass
-    if pid_alive(pid):
+    if not pid_exited(pid):
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
         deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and pid_alive(pid):
+        while time.monotonic() < deadline and not pid_exited(pid):
             time.sleep(0.1)
-    return not pid_alive(pid)
+    return pid_exited(pid)
 
 
 def reap_children():
