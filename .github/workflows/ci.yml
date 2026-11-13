@@ -1194,8 +1194,9 @@ jobs:
             echo "Tag pull platform mismatch: expected linux/amd64, got $tag_image_platform." >&2
             exit 1
           }
-          [[ ",$tag_repo_digests," == *",$GHCR_IMAGE@$EXPECTED_DIGEST,"* ]] || {
-            echo "Tag pull RepoDigests do not contain expected index $EXPECTED_DIGEST: $tag_repo_digests." >&2
+          expected_tag_repo_digest="$GHCR_IMAGE@$EXPECTED_DIGEST"
+          jq -e --arg expected "$expected_tag_repo_digest" 'type == "array" and any(.[]; . == $expected)' <<<"$tag_repo_digests" >/dev/null || {
+            echo "Tag pull RepoDigests do not contain expected index digest '$expected_tag_repo_digest'; actual RepoDigests: $tag_repo_digests." >&2
             exit 1
           }
 
@@ -1210,8 +1211,9 @@ jobs:
             echo "Direct child pull platform mismatch: expected linux/amd64, got $direct_image_platform." >&2
             exit 1
           }
-          [[ ",$direct_repo_digests," == *",$GHCR_IMAGE@$amd64_digest,"* ]] || {
-            echo "Direct child RepoDigests do not contain expected manifest $amd64_digest: $direct_repo_digests." >&2
+          expected_direct_repo_digest="$GHCR_IMAGE@$amd64_digest"
+          jq -e --arg expected "$expected_direct_repo_digest" 'type == "array" and any(.[]; . == $expected)' <<<"$direct_repo_digests" >/dev/null || {
+            echo "Direct child RepoDigests do not contain expected manifest digest '$expected_direct_repo_digest'; actual RepoDigests: $direct_repo_digests." >&2
             exit 1
           }
           docker buildx imagetools inspect --raw "$GHCR_IMAGE@$child_config_digest" > "$RUNNER_TEMP/retained-amd64-config.json"

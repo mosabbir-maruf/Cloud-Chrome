@@ -93,12 +93,45 @@ class GhcrConfigurationTest(unittest.TestCase):
         self.assertIn("AMD64 child manifest mediaType", verification)
         self.assertIn("Direct child pull image ID", verification)
         self.assertIn("Direct child pull RepoDigests", verification)
+        self.assertIn('jq -e --arg expected "$expected_tag_repo_digest" \'type == "array" and any(.[]; . == $expected)\'', verification)
+        self.assertIn('jq -e --arg expected "$expected_direct_repo_digest" \'type == "array" and any(.[]; . == $expected)\'', verification)
+        self.assertNotIn('[[ ",$tag_repo_digests,"', verification)
+        self.assertNotIn('[[ ",$direct_repo_digests,"', verification)
         self.assertIn("AMD64 config blob retrieved digest", verification)
         self.assertIn("AMD64 config blob retrieved size", verification)
         self.assertIn("pulled_config_digest", verification)
         self.assertIn("$GHCR_IMAGE@$EXPECTED_DIGEST", verification)
         self.assertIn("$GHCR_IMAGE@$amd64_digest", verification)
         self.assertNotIn("docker login", verification)
+
+    def test_repo_digest_json_array_membership_is_exact_and_fail_closed(self):
+        import subprocess
+
+        expression = 'type == "array" and any(.[]; . == $expected)'
+        expected = f"{IMAGE}@sha256:" + "a" * 64
+        exact = json.dumps([expected, f"ghcr.io/unrelated/image@sha256:{'a' * 64}"])
+        unrelated = json.dumps([f"ghcr.io/unrelated/image@sha256:{'a' * 64}"])
+        wrong_digest = json.dumps([f"{IMAGE}@sha256:{'b' * 64}"])
+
+        for value in (exact,):
+            result = subprocess.run(
+                ["jq", "-e", "--arg", "expected", expected, expression],
+                input=value,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        for value in (unrelated, wrong_digest, "null", "[]", "", "{}", "not-json"):
+            result = subprocess.run(
+                ["jq", "-e", "--arg", "expected", expected, expression],
+                input=value,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, value)
 
     def test_old_destructive_retention_script_is_removed(self):
         self.assertFalse((ROOT / "scripts/ghcr-retain-current.sh").exists())
