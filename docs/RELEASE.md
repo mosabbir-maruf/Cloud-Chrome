@@ -99,11 +99,16 @@ The publication is the repository owner's. When it happens:
       recorded.
 - [ ] For a public launch, the linked GHCR package visibility is explicitly
       set to Public so anonymous users can pull the prebuilt image.
-- [ ] The publishing workflow retains only the current tested image version;
-      documentation-only changes do not publish an image.
+- [ ] The publishing workflow runs graph-aware GHCR cleanup only after image
+      publication; documentation-only changes do not publish an image. Review
+      the cleanup dry-run plan before enabling destructive cleanup.
+- [ ] After cleanup, the publisher independently checks both tags against the
+      published digest and performs an anonymous `linux/amd64` pull using a
+      clean Docker configuration. The cleanup action's `validate` output is
+      informational, so this independent check is required.
 - [ ] If the GHCR package is public, check whether GitHub's 5,000-download
-      deletion limit blocks old versions; the workflow must report blocked
-      cleanup without claiming one-version retention.
+      deletion limit blocks old versions; report any cleanup failure without
+      claiming one-version retention.
 - [ ] The human acceptance items are done, or the release notes say that
       they are not.
 

@@ -14,7 +14,6 @@ class GhcrConfigurationTest(unittest.TestCase):
     def setUpClass(cls):
         cls.devcontainer = json.loads((ROOT / ".devcontainer/devcontainer.json").read_text())
         cls.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        cls.retention = (ROOT / "scripts/ghcr-retain-current.sh").read_text()
         cls.dockerfile = (ROOT / ".devcontainer/Dockerfile").read_text()
 
     def test_devcontainer_uses_prebuilt_runtime_image(self):
@@ -23,7 +22,7 @@ class GhcrConfigurationTest(unittest.TestCase):
         self.assertNotIn("build", self.devcontainer)
 
     def test_publisher_targets_runtime_package_with_both_tags(self):
-        self.assertEqual(self.workflow.count(f"GHCR_IMAGE: {IMAGE}"), 2)
+        self.assertEqual(self.workflow.count(f"GHCR_IMAGE: {IMAGE}"), 4)
         self.assertIn('docker image tag "$image_id" "$GHCR_IMAGE:latest"', self.workflow)
         self.assertIn('docker image tag "$image_id" "$GHCR_IMAGE:sha-$GITHUB_SHA"', self.workflow)
         self.assertIn('docker push "$GHCR_IMAGE:sha-$GITHUB_SHA"', self.workflow)
@@ -47,9 +46,53 @@ class GhcrConfigurationTest(unittest.TestCase):
         self.assertIn("group: cloud-chrome-ghcr-publisher", self.workflow)
         self.assertIn("cancel-in-progress: false", self.workflow)
 
-    def test_retention_is_restricted_to_new_package(self):
-        self.assertIn('"$PACKAGE_NAME" == cloud-chrome-runtime', self.retention)
-        self.assertIn("mosabbir-maruf/cloud-chrome-runtime", self.retention)
+    def test_cleanup_uses_pinned_graph_aware_action_and_safe_policy(self):
+        action = "dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f"
+        self.assertEqual(self.workflow.count(action), 2)
+        self.assertIn("packages: cloud-chrome-runtime", self.workflow)
+        self.assertIn("keep-n-tagged: 1", self.workflow)
+        self.assertIn("delete-untagged: true", self.workflow)
+        self.assertIn("validate: true", self.workflow)
+        self.assertIn("dry-run: true", self.workflow)
+        self.assertNotIn("delete-partial-images:", self.workflow)
+        self.assertNotIn("delete-ghost-images:", self.workflow)
+        self.assertNotIn("delete-orphaned-images:", self.workflow)
+        self.assertIn("inputs.ghcr_retention_dry_run != false", self.workflow)
+        self.assertIn("Confirm manual dispatch retention dry run succeeded", self.workflow)
+        self.assertIn("inputs.ghcr_retention_dry_run == false", self.workflow)
+        self.assertIn("github.event_name != 'workflow_dispatch'", self.workflow)
+        dry_run_step = self.workflow.split("      - name: Inspect current-image retention plan", 1)[1]
+        dry_run_step = dry_run_step.split("      - name: Apply graph-aware package retention", 1)[0]
+        destructive_step = self.workflow.split("      - name: Apply graph-aware package retention", 1)[1]
+        destructive_step = destructive_step.split("      - name: Verify retained tags", 1)[0]
+        self.assertIn("dry-run: true", dry_run_step)
+        self.assertNotIn("dry-run: true", destructive_step)
+        self.assertIn("id: package-retention", destructive_step)
+        self.assertIn("id: package-retention-dry-run", dry_run_step)
+        self.assertIn("CLEANUP_OUTCOME: ${{ steps.package-retention.outcome }}", self.workflow)
+        self.assertIn("CLEANUP_OUTCOME: ${{ steps.package-retention-dry-run.outcome }}", self.workflow)
+        self.assertIn('"$CLEANUP_OUTCOME" = success', self.workflow)
+
+    def test_post_cleanup_verification_is_fail_closed_and_anonymous(self):
+        marker = "      - name: Verify retained tags and anonymous AMD64 image graph"
+        verification = self.workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("EXPECTED_DIGEST", verification)
+        self.assertIn("github.event_name != 'workflow_dispatch'", verification)
+        self.assertIn('"$GHCR_IMAGE:latest"', verification)
+        self.assertIn('"$GHCR_IMAGE:$sha_tag"', verification)
+        self.assertIn("docker pull --platform linux/amd64", verification)
+        self.assertIn("DOCKER_CONFIG", verification)
+        self.assertIn("manifests[]?", verification)
+        self.assertIn("linux/amd64", verification)
+        self.assertIn("[ \"$latest_digest\" = \"$EXPECTED_DIGEST\" ]", verification)
+        self.assertIn("[ \"$sha_digest\" = \"$EXPECTED_DIGEST\" ]", verification)
+        self.assertIn('"$GHCR_IMAGE@$amd64_digest"', verification)
+        self.assertIn("docker context inspect", verification)
+        self.assertNotIn("docker login", verification)
+
+    def test_old_destructive_retention_script_is_removed(self):
+        self.assertFalse((ROOT / "scripts/ghcr-retain-current.sh").exists())
+        self.assertFalse((ROOT / "tests/unit/test_ghcr_retention.py").exists())
 
     def test_oci_source_and_local_ci_image_are_unchanged(self):
         self.assertIn('LABEL org.opencontainers.image.source="${OCI_SOURCE}"', self.dockerfile)
@@ -66,10 +109,7 @@ class GhcrConfigurationTest(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            if (
-                "ghcr.io/mosabbir-maruf/cloud-chrome:" in text
-                and relative != "tests/unit/test_ghcr_configuration.py"
-            ):
+            if "ghcr.io/mosabbir-maruf/cloud-chrome:" in text and relative != "tests/unit/test_ghcr_configuration.py":
                 offenders.append(path.relative_to(ROOT).as_posix())
         self.assertEqual(offenders, [])
 

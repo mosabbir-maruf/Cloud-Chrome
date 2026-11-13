@@ -9,6 +9,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      ghcr_retention_dry_run:
+        description: Run GHCR cleanup in dry-run mode for this manual dispatch
+        required: false
+        default: 'true'
+        type: boolean
 
 permissions:
   contents: read
@@ -1026,16 +1032,173 @@ jobs:
             || { echo "registry tags do not resolve to the pushed digest" >&2; exit 1; }
           echo "Published digest: $sha_digest"
 
-      - name: Retain only the current Cloud-Chrome package version
-        if: steps.current-main.outputs.current == 'true' && steps.image-inputs.outputs.changed == 'true'
+      - name: Inspect current-image retention plan
+        id: package-retention-dry-run
+        if: >-
+          steps.current-main.outputs.current == 'true' &&
+          steps.image-inputs.outputs.changed == 'true' &&
+          (github.event_name != 'workflow_dispatch' ||
+           inputs.ghcr_retention_dry_run != false)
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: mosabbir-maruf
+          packages: cloud-chrome-runtime
+          keep-n-tagged: 1
+          delete-untagged: true
+          validate: true
+          dry-run: true
+
+      - name: Apply graph-aware package retention
+        id: package-retention
+        if: >-
+          steps.current-main.outputs.current == 'true' &&
+          steps.image-inputs.outputs.changed == 'true' &&
+          (github.event_name != 'workflow_dispatch' ||
+           inputs.ghcr_retention_dry_run == false)
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: mosabbir-maruf
+          packages: cloud-chrome-runtime
+          keep-n-tagged: 1
+          delete-untagged: true
+          validate: true
+
+      - name: Verify retained tags and anonymous AMD64 image graph
+        if: >-
+          steps.current-main.outputs.current == 'true' &&
+          steps.image-inputs.outputs.changed == 'true' &&
+          github.event_name != 'workflow_dispatch'
         env:
-          GH_TOKEN: ${{ github.token }}
-          GHCR_DIGEST: ${{ steps.publish.outputs.digest }}
-          EXPECTED_SHA_TAG: sha-${{ github.sha }}
-          API_URL: ${{ github.api_url }}
-          PACKAGE_NAME: cloud-chrome-runtime
-          PACKAGE_OWNER: mosabbir-maruf
-        run: bash scripts/ghcr-retain-current.sh
+          GHCR_IMAGE: ghcr.io/mosabbir-maruf/cloud-chrome-runtime
+          EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED_DIGEST"
+          sha_tag="sha-$GITHUB_SHA"
+          docker_config=$(mktemp -d "$RUNNER_TEMP/anonymous-docker-config.XXXXXX")
+          trap 'rm -rf "$docker_config"' EXIT
+          export DOCKER_CONFIG="$docker_config"
+          docker context inspect >/dev/null
+
+          docker buildx imagetools inspect --raw "$GHCR_IMAGE:latest" > "$RUNNER_TEMP/retained-latest.json"
+          docker buildx imagetools inspect --raw "$GHCR_IMAGE:$sha_tag" > "$RUNNER_TEMP/retained-sha.json"
+          latest_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-latest.json" | awk '{print $1}')"
+          sha_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-sha.json" | awk '{print $1}')"
+          [ "$latest_digest" = "$EXPECTED_DIGEST" ] && [ "$sha_digest" = "$EXPECTED_DIGEST" ] || {
+            echo "Retained tags do not resolve to the expected published digest." >&2
+            exit 1
+          }
+          jq -e '
+            .schemaVersion == 2 and
+            ((.mediaType == "application/vnd.oci.image.index.v1+json" or
+              .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
+             ([.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length == 1))
+          ' "$RUNNER_TEMP/retained-latest.json" >/dev/null || {
+            echo "Retained latest manifest is not the expected single-level index with one linux/amd64 descriptor." >&2
+            exit 1
+          }
+          amd64_digest=$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' "$RUNNER_TEMP/retained-latest.json")
+          [[ "$amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Invalid linux/amd64 child digest." >&2
+            exit 1
+          }
+          docker pull --platform linux/amd64 "$GHCR_IMAGE:latest"
+          docker image inspect "$GHCR_IMAGE:latest" --format '{{.Os}}/{{.Architecture}}' | grep -Fx 'linux/amd64'
+          image_id=$(docker image inspect "$GHCR_IMAGE:latest" --format '{{.Id}}')
+          child_config_digest="sha256:${image_id#sha256:}"
+          docker buildx imagetools inspect --raw "$GHCR_IMAGE@$amd64_digest" > "$RUNNER_TEMP/retained-amd64.json"
+          [ "sha256:$(sha256sum "$RUNNER_TEMP/retained-amd64.json" | awk '{print $1}')" = "$amd64_digest" ] || {
+            echo "The linux/amd64 child manifest is not retrievable by its descriptor digest." >&2
+            exit 1
+          }
+          jq -e --arg config "$child_config_digest" '.config.digest == $config' "$RUNNER_TEMP/retained-amd64.json" >/dev/null || {
+            echo "The anonymously pulled AMD64 image does not match the retained index child manifest." >&2
+            exit 1
+          }
+
+      - name: Confirm package retention action succeeded
+        if: >-
+          steps.current-main.outputs.current == 'true' &&
+          steps.image-inputs.outputs.changed == 'true' &&
+          github.event_name != 'workflow_dispatch'
+        env:
+          CLEANUP_OUTCOME: ${{ steps.package-retention.outcome }}
+        run: |
+          set -euo pipefail
+          [ "$CLEANUP_OUTCOME" = success ] || {
+            echo "Graph-aware GHCR cleanup did not complete successfully: $CLEANUP_OUTCOME" >&2
+            exit 1
+          }
+
+      - name: Confirm manual dispatch retention dry run succeeded
+        if: >-
+          steps.current-main.outputs.current == 'true' &&
+          steps.image-inputs.outputs.changed == 'true' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.ghcr_retention_dry_run != false
+        env:
+          CLEANUP_OUTCOME: ${{ steps.package-retention-dry-run.outcome }}
+        run: |
+          set -euo pipefail
+          [ "$CLEANUP_OUTCOME" = success ] || {
+            echo "GHCR cleanup dry-run failed: $CLEANUP_OUTCOME" >&2
+            exit 1
+          }
+          echo "Cleanup dry-run completed; no package versions were deleted."
+
+      - name: Verify retained tags and anonymous AMD64 image graph
+        if: >-
+          steps.current-main.outputs.current == 'true' &&
+          steps.image-inputs.outputs.changed == 'true'
+        env:
+          GHCR_IMAGE: ghcr.io/mosabbir-maruf/cloud-chrome-runtime
+          EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED_DIGEST"
+          sha_tag="sha-$GITHUB_SHA"
+          docker_config=$(mktemp -d "$RUNNER_TEMP/anonymous-docker-config.XXXXXX")
+          trap 'rm -rf "$docker_config"' EXIT
+          export DOCKER_CONFIG="$docker_config"
+          docker context inspect >/dev/null
+
+          docker buildx imagetools inspect --raw "$GHCR_IMAGE:latest" > "$RUNNER_TEMP/retained-latest.json"
+          docker buildx imagetools inspect --raw "$GHCR_IMAGE:$sha_tag" > "$RUNNER_TEMP/retained-sha.json"
+          latest_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-latest.json" | awk '{print $1}')"
+          sha_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-sha.json" | awk '{print $1}')"
+          [ "$latest_digest" = "$EXPECTED_DIGEST" ] && [ "$sha_digest" = "$EXPECTED_DIGEST" ] || {
+            echo "Retained tags do not resolve to the expected published digest." >&2
+            exit 1
+          }
+          jq -e '
+            .schemaVersion == 2 and
+            ((.mediaType == "application/vnd.oci.image.index.v1+json" or
+              .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
+             ([.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length == 1))
+          ' "$RUNNER_TEMP/retained-latest.json" >/dev/null || {
+            echo "Retained latest manifest is not the expected single-level index with one linux/amd64 descriptor." >&2
+            exit 1
+          }
+          amd64_digest=$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' "$RUNNER_TEMP/retained-latest.json")
+          [[ "$amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Invalid linux/amd64 child digest." >&2
+            exit 1
+          }
+          docker pull --platform linux/amd64 "$GHCR_IMAGE:latest"
+          docker image inspect "$GHCR_IMAGE:latest" --format '{{.Os}}/{{.Architecture}}' | grep -Fx 'linux/amd64'
+          image_id=$(docker image inspect "$GHCR_IMAGE:latest" --format '{{.Id}}')
+          child_config_digest="sha256:${image_id#sha256:}"
+          docker buildx imagetools inspect --raw "$GHCR_IMAGE@$amd64_digest" > "$RUNNER_TEMP/retained-amd64.json"
+          [ "sha256:$(sha256sum "$RUNNER_TEMP/retained-amd64.json" | awk '{print $1}')" = "$amd64_digest" ] || {
+            echo "The linux/amd64 child manifest is not retrievable by its descriptor digest." >&2
+            exit 1
+          }
+          jq -e --arg config "$child_config_digest" '.config.digest == $config' "$RUNNER_TEMP/retained-amd64.json" >/dev/null || {
+            echo "The anonymously pulled AMD64 image does not match the retained index child manifest." >&2
+            exit 1
+          }
 
   cleanup-image-artifact:
     name: Clean up workflow image artifact
@@ -1079,5 +1242,5 @@ jobs:
             echo "GHCR publication did not complete successfully: $PUBLISH_RESULT" >&2
             exit 1
           else
-            echo "GHCR publication and retention job completed successfully."
+            echo "GHCR publication, retention, and anonymous image verification completed successfully."
           fi
