@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/orgs/mosabbir-maruf/packages/container/package/cloud-chrome">
-    <img src="https://img.shields.io/badge/GHCR-cloud--chrome-blue?logo=docker" alt="Cloud-Chrome container image on GHCR" />
+  <a href="https://github.com/users/mosabbir-maruf/packages/container/package/cloud-chrome-runtime">
+    <img src="https://img.shields.io/badge/GHCR-cloud--chrome--runtime-blue?logo=docker" alt="Cloud-Chrome runtime container image on GHCR" />
   </a>
   <a href="https://github.com/mosabbir-maruf/Cloud-Chrome/actions/workflows/ci.yml">
     <img src="https://github.com/mosabbir-maruf/Cloud-Chrome/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" />
@@ -80,7 +80,7 @@ Codespaces compute and storage usage is billed under your account and quota.
 4. Select **Create codespace on main**. If GitHub asks you to choose a
    machine, select one that meets the project's resource requirements.
 5. Wait for the Codespace to be created. It uses the published
-   `ghcr.io/mosabbir-maruf/cloud-chrome:latest` prebuilt image; you are not
+   `ghcr.io/mosabbir-maruf/cloud-chrome-runtime:latest` prebuilt image; you are not
    asked to build a Docker image on your computer. Successful startup depends
    on that package being accessible to Codespaces. The first initialization
    creates your private state, and the Codespace automatically starts the
@@ -242,7 +242,7 @@ supervisor starts six components in dependency order: Xvnc on `:99`, a
 private D-Bus session, GNOME Keyring with Secret Service, XFCE, noVNC on
 port `6080`, and Chrome. The keyring is verified before Chrome starts.
 
-The configured prebuilt image is `ghcr.io/mosabbir-maruf/cloud-chrome:latest`.
+The configured prebuilt image is `ghcr.io/mosabbir-maruf/cloud-chrome-runtime:latest`.
 The Dockerfile remains the source used by CI to build and test that image;
 the publishing workflow runs only after eligible successful checks on
 `main` (or a manual dispatch). Documentation-only changes do not publish a

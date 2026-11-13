@@ -99,7 +99,7 @@ sys.stdout.write('200')
                 "GHCR_DIGEST": DIGEST,
                 "EXPECTED_SHA_TAG": SHA_TAG,
                 "PACKAGE_OWNER": "mosabbir-maruf",
-                "PACKAGE_NAME": "cloud-chrome",
+                "PACKAGE_NAME": "cloud-chrome-runtime",
                 "RUNNER_TEMP": temporary,
             }
         )

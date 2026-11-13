@@ -135,8 +135,19 @@ and an anonymous pull have both been checked.
 - [ ] Separately change the linked GHCR package visibility to **Public** if
       anonymous Codespaces pulls are intended. Repository visibility alone is
       insufficient.
+- [ ] On the first successful publication, open the new package at
+      [`cloud-chrome-runtime`](https://github.com/users/mosabbir-maruf/packages/container/package/cloud-chrome-runtime).
+      In **Package settings**, verify it is connected to
+      [`mosabbir-maruf/Cloud-Chrome`](https://github.com/mosabbir-maruf/Cloud-Chrome).
+      If it is not, use **Connect repository** (or the package's repository
+      access settings) to associate that repository, then grant its GitHub
+      Actions access if the package settings require it.
+- [ ] In the package's **Change visibility** settings, set visibility to
+      **Public** when anonymous Codespaces pulls are intended. Verify with an
+      anonymous `docker pull`; a successful workflow push alone does not prove
+      package visibility or anonymous access.
 - [ ] From an anonymous environment, verify that
-      `ghcr.io/mosabbir-maruf/cloud-chrome:latest` can be pulled without
+      `ghcr.io/mosabbir-maruf/cloud-chrome-runtime:latest` can be pulled without
       credentials. Do not use an authenticated pull as evidence of anonymous
       access.
 - [ ] Record the published image digest and verify it corresponds to the

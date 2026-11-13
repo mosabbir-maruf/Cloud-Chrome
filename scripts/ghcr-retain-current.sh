@@ -10,8 +10,8 @@ set -euo pipefail
 : "${PACKAGE_NAME:?Package name is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 
-[[ "$PACKAGE_OWNER" == mosabbir-maruf && "$PACKAGE_NAME" == cloud-chrome ]] || {
-  echo "Refusing to operate outside mosabbir-maruf/cloud-chrome." >&2
+[[ "$PACKAGE_OWNER" == mosabbir-maruf && "$PACKAGE_NAME" == cloud-chrome-runtime ]] || {
+  echo "Refusing to operate outside mosabbir-maruf/cloud-chrome-runtime." >&2
   exit 1
 }
 [[ "$GHCR_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {

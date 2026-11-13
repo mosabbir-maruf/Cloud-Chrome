@@ -965,7 +965,7 @@ jobs:
         if: steps.current-main.outputs.current == 'true' && steps.image-inputs.outputs.changed == 'true'
         id: metadata-image
         env:
-          GHCR_IMAGE: ghcr.io/mosabbir-maruf/cloud-chrome
+          GHCR_IMAGE: ghcr.io/mosabbir-maruf/cloud-chrome-runtime
           EXPECTED_IMAGE_ID: ${{ needs.build.outputs.image_id }}
         run: |
           set -euo pipefail
@@ -998,7 +998,7 @@ jobs:
         id: publish
         if: steps.current-main.outputs.current == 'true' && steps.image-inputs.outputs.changed == 'true'
         env:
-          GHCR_IMAGE: ghcr.io/mosabbir-maruf/cloud-chrome
+          GHCR_IMAGE: ghcr.io/mosabbir-maruf/cloud-chrome-runtime
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUBLISHED_IMAGE_ID: ${{ needs.build.outputs.image_id }}
@@ -1033,7 +1033,7 @@ jobs:
           GHCR_DIGEST: ${{ steps.publish.outputs.digest }}
           EXPECTED_SHA_TAG: sha-${{ github.sha }}
           API_URL: ${{ github.api_url }}
-          PACKAGE_NAME: cloud-chrome
+          PACKAGE_NAME: cloud-chrome-runtime
           PACKAGE_OWNER: mosabbir-maruf
         run: bash scripts/ghcr-retain-current.sh
 

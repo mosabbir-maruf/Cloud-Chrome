@@ -1,6 +1,6 @@
 {
   "name": "Cloud-Chrome",
-  "image": "ghcr.io/mosabbir-maruf/cloud-chrome:latest",
+  "image": "ghcr.io/mosabbir-maruf/cloud-chrome-runtime:latest",
   "remoteUser": "vscode",
   "hostRequirements": {
     "cpus": 2,
