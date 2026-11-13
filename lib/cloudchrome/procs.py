@@ -2,13 +2,13 @@
 
 A PID on its own is not an identity: the kernel recycles PIDs, so a stale PID
 file can name an unrelated process that happens to have the same number. Every
-PID file written by Cloud-Chrome therefore records the process *start time*
-as well, and a PID is only ever signalled when the running process matches
-both the PID and the recorded start time.
+PID file written by Cloud-Chrome therefore records the process *start time* as
+well, and a PID is only ever signalled when the running process matches both
+the PID and the recorded start time.
 
-Termination walks the process tree through ``/proc`` and only ever signals
-processes that are descendants of the recorded PID, so a Chrome started by
-another session is never touched.
+Every supervised component owns a new session and process group. Termination
+uses that group as its boundary after verifying the original PID/start-time
+identity, so a Chrome started by another session is never touched.
 """
 
 import errno
@@ -39,6 +39,45 @@ def proc_start_time(pid):
         return int(fields[19])
     except ValueError:
         return None
+
+
+def proc_identity(pid):
+    """Return (state, ppid, pgrp, session, start_time), or None."""
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as handle:
+            data = handle.read()
+    except (OSError, ValueError):
+        return None
+    try:
+        fields = data[data.rindex(b")") + 2:].split()
+        if len(fields) < 20:
+            return None
+        return (
+            fields[0].decode("ascii", "replace"),
+            int(fields[1]),
+            int(fields[2]),
+            int(fields[3]),
+            int(fields[19]),
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def process_group_members(pgid):
+    """Return process identities in *pgid*; zombies are no longer live."""
+    members = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return members
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        identity = proc_identity(pid)
+        if identity is not None and identity[2] == pgid:
+            members.append((pid, identity[0], identity[4]))
+    return members
 
 
 def pid_alive(pid):
@@ -203,56 +242,122 @@ def descendants_of(pid):
 
 
 def terminate(pid, start_time=None, timeout=10.0, label=""):
-    """Stop the process *pid*, and its descendants, gracefully.
+    """Stop the owned component process group gracefully.
 
     ``SIGTERM`` is sent first and ``SIGKILL`` follows only if the process is
-    still alive after *timeout* seconds. The start time is verified before
-    anything is signalled, so a recycled PID is never killed. The return value
-    is True when the process is gone.
+    still alive after *timeout* seconds. PID, start time, PGID and session are
+    verified before group signals. The return value is True only when no live
+    processes remain in the component group.
     """
-    if not pid_alive(pid):
+    identity = proc_identity(pid)
+    if identity is None:
+        return not pid_alive(pid)
+    state, _ppid, pgid, session, current_start = identity
+    if start_time is not None and current_start != start_time:
         return True
-    if start_time is not None and not pid_matches(pid, start_time):
-        return True
-    if label:
-        try:
-            with open("/proc/%d/cmdline" % pid, "rb") as handle:
-                pass
-        except OSError:
-            pass
+    if state == "Z":
+        # A zombie has no running process group to signal. For a component
+        # leader, however, live same-group descendants still need termination.
+        if pgid != pid or session != pid:
+            return True
+        members = process_group_members(pgid)
+        if not any(member_state != "Z" for _member_pid, member_state, _ticks in members):
+            return True
+        return False
+    # start_new_session=True gives each component its own session and group,
+    # with the leader PID equal to its PGID. Refuse to signal if that invariant
+    # is not true; falling back to a broad tree walk could cross ownership.
+    if pgid != pid or session != pid:
+        return False
+    leader_start = current_start
 
-    targets = descendants_of(pid)
-    for target in targets:
+    def signal_group(sig):
+        # Revalidate all observable identities immediately before group signal.
+        current = proc_identity(pid)
+        if current is None or current[4] != leader_start or current[2] != pgid or current[3] != session:
+            return False
+        if start_time is not None and current[4] != start_time:
+            return False
         try:
-            os.kill(target, signal.SIGTERM)
+            os.killpg(pgid, sig)
+            return True
+        except ProcessLookupError:
+            return True
         except OSError:
-            pass
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
+            return False
 
-    deadline = time.monotonic() + timeout
+    def same_group_members():
+        current_leader = proc_identity(pid)
+        if current_leader is None:
+            if not pid_alive(pid):
+                return []
+            return None
+        if current_leader is not None:
+            if current_leader[2] != pgid or current_leader[3] != session:
+                return None
+            if current_leader[4] != leader_start:
+                return None
+        members = process_group_members(pgid)
+        # Descendants can outlive/reparent away from their leader. Pin a group
+        # with session identity and every live member's start time, then fail
+        # closed if a numeric PGID is reused or any member escaped the session.
+        live_members = [(member_pid, member_start) for member_pid, member_state, member_start in members if member_state != "Z"]
+        for member_pid, member_start in live_members:
+            member_identity = proc_identity(member_pid)
+            if (
+                member_identity is None
+                or member_identity[2] != pgid
+                or member_identity[3] != session
+                or member_identity[4] != member_start
+            ):
+                return None
+        if current_leader[0] != "Z" and not any(
+            member_pid == pid and member_start == leader_start
+            for member_pid, _member_state, member_start in members
+        ):
+            return None
+        return live_members
+
+    members = same_group_members()
+    if members is None:
+        return False
+    if members:
+        # The leader was verified immediately before signalling. Group signals
+        # are bounded by its dedicated PGID, not by an untrusted process tree.
+        try:
+            if not signal_group(signal.SIGTERM):
+                return False
+        except OSError:
+            return False
+
+    deadline = time.monotonic() + max(float(timeout), 0.0)
     while time.monotonic() < deadline:
-        if pid_exited(pid):
-            break
-        time.sleep(0.1)
+        members = same_group_members()
+        if members == []:
+            return True
+        if members is None:
+            return False
+        time.sleep(0.05)
 
-    for target in targets:
-        if not pid_exited(target):
-            try:
-                os.kill(target, signal.SIGKILL)
-            except OSError:
-                pass
-    if not pid_exited(pid):
+    members = same_group_members()
+    if members is None:
+        return False
+    if members:
         try:
-            os.kill(pid, signal.SIGKILL)
+            if not signal_group(signal.SIGKILL):
+                return False
         except OSError:
-            pass
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not pid_exited(pid):
-            time.sleep(0.1)
-    return pid_exited(pid)
+            return False
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        members = same_group_members()
+        if members == []:
+            return True
+        if members is None:
+            return False
+        time.sleep(0.05)
+    return same_group_members() == []
 
 
 def reap_children():

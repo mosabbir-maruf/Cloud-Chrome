@@ -105,7 +105,9 @@ class Component:
         """Stop the component and everything it started."""
         if self.process is None:
             return True
-        return procs.terminate(self.process.pid, self.start_time, timeout=timeout)
+        return procs.terminate(
+            self.process.pid, self.start_time, timeout=timeout, label=self.name
+        )
 
 
 class Supervisor:
@@ -513,14 +515,12 @@ class Supervisor:
             except Stopped:
                 self.state = "stopped"
                 self.write_state()
-                self.stop_all()
                 raise
             except CloudChromeError as exc:
                 self.state = "failed"
                 self.error = "%s: %s" % (name, exc)
                 self.log("component %s failed to start: %s" % (name, exc))
                 self.write_state()
-                self.stop_all()
                 raise
         self.state = "running"
         self.write_state()
@@ -528,26 +528,47 @@ class Supervisor:
 
     # --- shutdown -----------------------------------------------------------
     def stop_all(self):
-        """Stop every component in the reverse of the start order."""
+        """Stop components in reverse order and return whether all stopped."""
         self._stopping = True
         self.state = "stopping"
         timeout = max(self.config.stop_timeout, 1)
-        for name in reversed(COMPONENT_ORDER):
-            component = self.components.get(name)
-            if component is None:
-                continue
-            if component.alive():
-                self.log("stopping %s (pid %s)" % (name, component.pid))
-            component.stop(timeout)
-            if component.log_handle is not None:
+        failures = []
+        try:
+            for name in reversed(COMPONENT_ORDER):
+                component = self.components.get(name)
+                if component is None:
+                    continue
+                if component.alive():
+                    self.log("stopping %s (pid %s)" % (name, component.pid))
                 try:
-                    component.log_handle.close()
-                except OSError:
-                    pass
-        self.components.clear()
-        procs.reap_children()
-        self.state = "stopped"
-        self.write_state()
+                    stopped = component.stop(timeout)
+                except Exception as exc:  # keep cleaning remaining owned groups
+                    stopped = False
+                    self.log("error stopping %s (pid %s): %s" % (name, component.pid, exc))
+                if not stopped:
+                    members = procs.process_group_members(component.pid)
+                    message = (
+                        "failed to stop %s process group (leader pid %s, start time %s; live members %s)"
+                        % (name, component.pid, component.start_time, members)
+                    )
+                    failures.append(message)
+                    self.log(message)
+                if component.log_handle is not None:
+                    try:
+                        component.log_handle.close()
+                    except OSError:
+                        pass
+        finally:
+            self.components.clear()
+            procs.reap_children()
+            if failures:
+                self.error = "; ".join(failures)
+                self.state = "failed"
+                self.log("shutdown incomplete: %s" % self.error)
+            else:
+                self.state = "stopped"
+            self.write_state()
+        return not failures
 
     # --- signals ------------------------------------------------------------
     def install_signal_handlers(self):
@@ -579,8 +600,7 @@ class Supervisor:
         # A stop request leaves nothing behind: the components the
         # supervisor started are stopped with it. A supervisor that exits
         # without them leaves an orphaned desktop behind.
-        self.stop_all()
-        return 0
+        return 0 if self.stop_all() else 1
 
     # --- entry point --------------------------------------------------------
     def run(self):
@@ -610,20 +630,28 @@ class Supervisor:
             # components that were already started are stopped and the
             # supervisor exits cleanly.
             self.log("the supervisor was stopped while the stack was starting")
+            self.stop_all()
             self._cleanup_pid_file()
             self._lock.release()
-            return 0
+            return 1 if self.state == "failed" else 0
         except CloudChromeError as exc:
             self.error = str(exc)
             self.write_state()
+            self.stop_all()
             self._cleanup_pid_file()
             self._lock.release()
             return 1
+        except BaseException:
+            self.stop_all()
+            self._cleanup_pid_file()
+            self._lock.release()
+            raise
 
-        result = self.monitor()
-        self._cleanup_pid_file()
-        self._lock.release()
-        return result
+        try:
+            return self.monitor()
+        finally:
+            self._cleanup_pid_file()
+            self._lock.release()
 
     def _cleanup_pid_file(self):
         procs.remove_pid_file(self.layout.supervisor_pid_file)

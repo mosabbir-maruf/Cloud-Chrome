@@ -402,9 +402,12 @@ if [ -n "$backup_file" ]; then
     cp "$WORK/backup.saved" "$backup_file"
 fi
 
-# 5f. A SIGTERM during the startup.
-python3 - <<'PY' > "$WORK/sigterm.txt" 2>&1
+# 5f. SIGTERM during startup, repeated to expose timing races.
+partial_startup_ready=1
+for attempt in 1 2 3; do
+    python3 - <<'PY' > "$WORK/sigterm-$attempt.txt" 2>&1
 import os, signal, subprocess, sys, time
+import shutil
 sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "lib"))
 from cloudchrome import procs
 from cloudchrome.config import load_config
@@ -412,15 +415,52 @@ from cloudchrome.paths import Layout
 
 config = load_config()
 layout = Layout(config)
+markers = ("Xtigervnc", "dbus-daemon", "gnome-keyring-daemon", "xfce4-session", "xfwm4", "websockify", "google-chrome")
+for command in ("Xtigervnc", "dbus-daemon", "gnome-keyring-daemon", "xfce4-session", "xfwm4", "websockify", "google-chrome"):
+    if shutil.which(command):
+        pass
+    else:
+        print("partial_startup_dependency_missing=%s" % command)
+        sys.exit(77)
 
-# A supervisor that receives SIGTERM while it is starting must clean up the
-# processes it already started and must not leave a stale PID file.
+def scan():
+    found = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        identity = procs.proc_identity(pid)
+        if identity is None:
+            continue
+        argv = procs.read_cmdline(pid)
+        try:
+            with open("/proc/%d/comm" % pid, encoding="utf-8") as handle:
+                comm = handle.read().strip()
+        except OSError:
+            comm = ""
+        joined = " ".join(argv) if argv else ""
+        if any(marker.lower() in (comm + " " + joined).lower() for marker in markers) or "--user-data-dir=%s" % layout.chrome_dir in joined:
+            found[pid] = identity
+    return found
+
+# Record pre-existing matches so unrelated runtime processes are not counted
+# as orphans from this test's supervisor.
+baseline = scan()
 env = dict(os.environ)
 env["PYTHONPATH"] = os.path.join(os.environ["REPO_ROOT"], "lib")
 process = subprocess.Popen(
     [sys.executable, "-m", "cloudchrome.supervisor"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-time.sleep(0.5)
+# Wait until at least one new supervised process appears, but retain a bounded
+# fallback for very early startup failures.
+deadline = time.monotonic() + 8
+while time.monotonic() < deadline:
+    current = scan()
+    if set(current) - set(baseline):
+        break
+    if process.poll() is not None:
+        break
+    time.sleep(0.02)
 try:
     os.kill(process.pid, signal.SIGTERM)
 except ProcessLookupError:
@@ -428,53 +468,55 @@ except ProcessLookupError:
 process.wait(timeout=60)
 print("supervisor_exited=%s" % (process.returncode is not None))
 print("exit_code=%s" % process.returncode)
-
-# The PID file must be gone: a stale PID file would confuse the next start.
 print("pidfile_removed=%s" % (not os.path.exists(layout.supervisor_pid_file)))
 
-# No component may be left running.
-leftover = 0
-for entry in os.listdir("/proc"):
-    if not entry.isdigit():
-        continue
-    argv = procs.read_cmdline(int(entry))
-    joined = " ".join(argv)
-    if "cloudchrome" in joined and "supervisor" in joined:
-        leftover += 1
-print("supervisors_left=%d" % leftover)
-
-# No component of the desktop may be left running either: a supervisor that
-# exits without stopping what it started leaves an orphaned desktop.
-markers = ("Xtigervnc", "gnome-keyring-daemon", "xfce4-session", "websockify")
-leftover_components = 0
-for entry in os.listdir("/proc"):
-    if not entry.isdigit():
-        continue
-    argv = procs.read_cmdline(int(entry))
-    joined = " ".join(argv)
-    if any(marker in joined for marker in markers):
-        leftover_components += 1
-    elif "--user-data-dir=%s" % layout.chrome_dir in joined:
-        leftover_components += 1
-print("components_left=%d" % leftover_components)
+deadline = time.monotonic() + 2
+leftovers = {}
+while time.monotonic() < deadline:
+    current = scan()
+    leftovers = {pid: ident for pid, ident in current.items() if pid not in baseline}
+    live_leftovers = {pid: ident for pid, ident in leftovers.items() if ident[0] != "Z"}
+    if not live_leftovers:
+        break
+    time.sleep(0.05)
+live_leftovers = {pid: ident for pid, ident in leftovers.items() if ident[0] != "Z"}
+print("supervisors_left=%d" % sum(1 for pid in live_leftovers if "cloudchrome.supervisor" in " ".join(procs.read_cmdline(pid))))
+print("components_left=%d" % len(live_leftovers))
+for pid, ident in sorted(leftovers.items()):
+    state, ppid, pgid, sid, start = ident
+    argv = procs.read_cmdline(pid)
+    try:
+        with open("/proc/%d/comm" % pid, encoding="utf-8") as handle:
+            comm = handle.read().strip()
+    except OSError:
+        comm = "[unavailable]"
+    name = os.path.basename(argv[0]) if argv else comm
+    print("leftover pid=%d ppid=%d pgid=%d sid=%d state=%s name=%s" % (pid, ppid, pgid, sid, state, name))
 PY
 
-grep -q "supervisor_exited=True" "$WORK/sigterm.txt" \
-    && pass "the supervisor exits on SIGTERM" \
-    || fail "the supervisor exits on SIGTERM" "$(cat "$WORK/sigterm.txt")"
-
-grep -q "pidfile_removed=True" "$WORK/sigterm.txt" \
-    && pass "the supervisor removes its PID file when it stops" \
-    || fail "the supervisor removes its PID file when it stops"
-
-grep -q "supervisors_left=0" "$WORK/sigterm.txt" \
-    && pass "no supervisor is left running after SIGTERM" \
-    || fail "no supervisor is left running after SIGTERM"
-
-grep -q "components_left=0" "$WORK/sigterm.txt" \
-    && pass "no component is left running after SIGTERM" \
-    || fail "no component is left running after SIGTERM" \
-        "$(tr '\n' ' ' < "$WORK/sigterm.txt")"
+    if [ "$attempt" -eq 1 ]; then
+        cat "$WORK/sigterm-$attempt.txt" >> "$WORK/sigterm.txt"
+    else
+        cat "$WORK/sigterm-$attempt.txt" >> "$WORK/sigterm.txt"
+    fi
+    grep -q "supervisor_exited=True" "$WORK/sigterm-$attempt.txt" \
+        && pass "startup SIGTERM exits supervisor (attempt $attempt)" \
+        || fail "startup SIGTERM exits supervisor (attempt $attempt)" "$(cat "$WORK/sigterm-$attempt.txt")"
+    grep -q "pidfile_removed=True" "$WORK/sigterm-$attempt.txt" \
+        && pass "startup SIGTERM removes PID file (attempt $attempt)" \
+        || fail "startup SIGTERM removes PID file (attempt $attempt)"
+    grep -q "supervisors_left=0" "$WORK/sigterm-$attempt.txt" \
+        && pass "startup SIGTERM leaves no supervisor (attempt $attempt)" \
+        || fail "startup SIGTERM leaves no supervisor (attempt $attempt)"
+    grep -q "components_left=0" "$WORK/sigterm-$attempt.txt" \
+        && pass "startup SIGTERM leaves no new components (attempt $attempt)" \
+        || fail "startup SIGTERM leaves no new components (attempt $attempt)" \
+            "$(tr '\n' ' ' < "$WORK/sigterm-$attempt.txt")"
+    grep -q '^partial_startup_dependency_missing=' "$WORK/sigterm-$attempt.txt" && partial_startup_ready=0
+done
+if [ "$partial_startup_ready" -eq 0 ]; then
+    note "startup SIGTERM repetitions require the desktop image" "$(grep '^partial_startup_dependency_missing=' "$WORK/sigterm-1.txt")"
+fi
 
 # ---------------------------------------------------------------------------
 section "6. The privilege audit"

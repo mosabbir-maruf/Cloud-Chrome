@@ -34,6 +34,7 @@ from cloudchrome.errors import (  # noqa: E402
     UnsupportedError,
 )
 from cloudchrome.locking import FileLock, is_locked  # noqa: E402
+from cloudchrome.supervisor import Component, COMPONENT_ORDER, Supervisor  # noqa: E402
 
 
 class TempStateCase(unittest.TestCase):
@@ -299,12 +300,20 @@ class ProcessTest(TempStateCase):
     )
     def test_terminate_leaves_nothing_running(self):
         import subprocess
+        import sys
 
-        process = subprocess.Popen(["sleep", "30"])
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); time.sleep(30)"],
+            start_new_session=True,
+        )
         start = procs.proc_start_time(process.pid)
-        procs.terminate(process.pid, start, timeout=5)
+        self.assertTrue(procs.terminate(process.pid, start, timeout=1))
         process.wait(timeout=5)
         self.assertIsNotNone(process.returncode)
+        self.assertEqual(
+            [member for member in procs.process_group_members(process.pid) if member[1] != "Z"],
+            [],
+        )
 
     @unittest.skipUnless(
         os.path.isdir("/proc"), "the process tests need /proc (Linux only)"
@@ -314,12 +323,98 @@ class ProcessTest(TempStateCase):
         self.assertTrue(procs.terminate(os.getpid(), 1, timeout=1))
         self.assertTrue(procs.pid_alive(os.getpid()))
 
+    @unittest.skipUnless(os.path.isdir("/proc"), "the process tests need /proc (Linux only)")
+    def test_terminate_requires_owned_process_group(self):
+        import subprocess
+        import sys
+
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            start = procs.proc_start_time(process.pid)
+            self.assertFalse(procs.terminate(process.pid, start, timeout=0.1))
+            self.assertTrue(procs.pid_alive(process.pid))
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "the process tests need /proc (Linux only)")
+    def test_terminate_refuses_a_reused_group_after_leader_exit(self):
+        import subprocess
+        import sys
+        import time
+
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import os,time; pid=os.fork(); time.sleep(30) if pid == 0 else time.sleep(30)"],
+            start_new_session=True,
+        )
+        start = procs.proc_start_time(process.pid)
+        deadline = time.monotonic() + 3
+        child = None
+        while time.monotonic() < deadline:
+            members = procs.process_group_members(process.pid)
+            child = next((pid for pid, state, _ticks in members if pid != process.pid and state != "Z"), None)
+            if child:
+                break
+            time.sleep(0.02)
+        self.assertIsNotNone(child, "the test child was not started")
+        os.kill(process.pid, 15)
+        process.wait(timeout=5)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and procs.proc_identity(process.pid) is not None:
+            time.sleep(0.02)
+        leader_identity = procs.proc_identity(process.pid)
+        if leader_identity is None:
+            self.assertTrue(procs.terminate(process.pid, start, timeout=0.1))
+            self.assertTrue(procs.pid_alive(child))
+        else:
+            # A zombie leader still pins its PGID. The owned group may be
+            # signalled safely until its descendants exit.
+            self.assertTrue(procs.terminate(process.pid, start, timeout=0.1))
+
     @unittest.skipUnless(
         os.path.isdir("/proc"), "the process tests need /proc (Linux only)"
     )
     def test_read_cmdline(self):
         argv = procs.read_cmdline(os.getpid())
         self.assertTrue(argv)
+
+    def test_stop_all_reports_failed_component_and_continues_reverse_order(self):
+        config = config_module.Config(dict(config_module.DEFAULTS))
+        layout = self.layout()
+        supervisor = Supervisor(config, layout)
+        calls = []
+
+        class FakeComponent:
+            process = None
+            start_time = 123
+            log_handle = None
+            pid = 4321
+
+            def __init__(self, name, result):
+                self.name = name
+                self.result = result
+
+            def alive(self):
+                return True
+
+            def stop(self, _timeout):
+                calls.append(self.name)
+                return self.result
+
+        supervisor.components = {
+            "xvnc": FakeComponent("xvnc", True),
+            "dbus": FakeComponent("dbus", False),
+            "chrome": FakeComponent("chrome", True),
+        }
+        original_members = procs.process_group_members
+        procs.process_group_members = lambda _pgid: [(4321, "S", 123)]
+        self.addCleanup(setattr, procs, "process_group_members", original_members)
+
+        self.assertFalse(supervisor.stop_all())
+        self.assertEqual(calls, ["chrome", "dbus", "xvnc"])
+        self.assertEqual(supervisor.state, "failed")
+        self.assertIn("dbus", supervisor.error)
+        self.assertEqual(supervisor.components, {})
 
 
 class ChromePolicyTest(TempStateCase):
