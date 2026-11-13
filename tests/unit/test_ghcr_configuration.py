@@ -46,6 +46,36 @@ class GhcrConfigurationTest(unittest.TestCase):
         self.assertIn("group: cloud-chrome-ghcr-publisher", self.workflow)
         self.assertIn("cancel-in-progress: false", self.workflow)
 
+    def test_backup_image_download_has_a_timeout(self):
+        marker = "  backup:\n"
+        backup = self.workflow.split(marker, 1)[1].split("\n  hardening:\n", 1)[0]
+        download = backup.split("      - name: Download the image\n", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("timeout-minutes: 10", download)
+        self.assertIn("actions/download-artifact@", download)
+        self.assertIn("retention-days: 1", self.workflow)
+
+    def test_image_artifact_cleanup_preserves_failed_or_cancelled_consumers(self):
+        marker = "  cleanup-image-artifact:\n"
+        cleanup = self.workflow.split(marker, 1)[1].split("\n  publication-status:\n", 1)[0]
+        self.assertIn("needs: [build, runtime, backup, hardening, publish]", cleanup)
+        for result_var in (
+            "BUILD_RESULT",
+            "RUNTIME_RESULT",
+            "BACKUP_RESULT",
+            "HARDENING_RESULT",
+            "PUBLISH_RESULT",
+        ):
+            self.assertIn(f"{result_var}: ${{{{ needs.", cleanup)
+        self.assertIn('[ "$PUBLISH_RESULT" != success ]', cleanup)
+        self.assertIn('[ "$PUBLISH_RESULT" != skipped ]', cleanup)
+        self.assertIn('[ "$BUILD_RESULT" != success ]', cleanup)
+        self.assertIn('[ "$RUNTIME_RESULT" != success ]', cleanup)
+        self.assertIn('[ "$BACKUP_RESULT" != success ]', cleanup)
+        self.assertIn('[ "$HARDENING_RESULT" != success ]', cleanup)
+        self.assertIn("Intentionally retaining cloud-chrome-image artifact ID", cleanup)
+        self.assertIn("one-day retention period", cleanup)
+        self.assertIn("Deleted cloud-chrome-image artifact ID", cleanup)
+
     def test_cleanup_uses_pinned_graph_aware_action_and_safe_policy(self):
         action = "dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f"
         self.assertEqual(self.workflow.count(action), 2)
