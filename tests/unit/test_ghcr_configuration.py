@@ -22,7 +22,7 @@ class GhcrConfigurationTest(unittest.TestCase):
         self.assertNotIn("build", self.devcontainer)
 
     def test_publisher_targets_runtime_package_with_both_tags(self):
-        self.assertEqual(self.workflow.count(f"GHCR_IMAGE: {IMAGE}"), 4)
+        self.assertEqual(self.workflow.count(f"GHCR_IMAGE: {IMAGE}"), 3)
         self.assertIn('docker image tag "$image_id" "$GHCR_IMAGE:latest"', self.workflow)
         self.assertIn('docker image tag "$image_id" "$GHCR_IMAGE:sha-$GITHUB_SHA"', self.workflow)
         self.assertIn('docker push "$GHCR_IMAGE:sha-$GITHUB_SHA"', self.workflow)
@@ -75,19 +75,29 @@ class GhcrConfigurationTest(unittest.TestCase):
 
     def test_post_cleanup_verification_is_fail_closed_and_anonymous(self):
         marker = "      - name: Verify retained tags and anonymous AMD64 image graph"
+        self.assertEqual(self.workflow.count(marker), 1)
         verification = self.workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
         self.assertIn("EXPECTED_DIGEST", verification)
-        self.assertIn("github.event_name != 'workflow_dispatch'", verification)
+        self.assertIn("steps.image-inputs.outputs.changed == 'true'", verification)
+        self.assertNotIn("github.event_name != 'workflow_dispatch'", verification)
         self.assertIn('"$GHCR_IMAGE:latest"', verification)
         self.assertIn('"$GHCR_IMAGE:$sha_tag"', verification)
         self.assertIn("docker pull --platform linux/amd64", verification)
         self.assertIn("DOCKER_CONFIG", verification)
         self.assertIn("manifests[]?", verification)
         self.assertIn("linux/amd64", verification)
-        self.assertIn("[ \"$latest_digest\" = \"$EXPECTED_DIGEST\" ]", verification)
-        self.assertIn("[ \"$sha_digest\" = \"$EXPECTED_DIGEST\" ]", verification)
+        self.assertIn('[ "$latest_digest" = "$EXPECTED_DIGEST" ]', verification)
+        self.assertIn('[ "$sha_digest" = "$EXPECTED_DIGEST" ]', verification)
         self.assertIn('"$GHCR_IMAGE@$amd64_digest"', verification)
         self.assertIn("docker context inspect", verification)
+        self.assertIn("AMD64 child manifest mediaType", verification)
+        self.assertIn("Direct child pull image ID", verification)
+        self.assertIn("Direct child pull RepoDigests", verification)
+        self.assertIn("AMD64 config blob retrieved digest", verification)
+        self.assertIn("AMD64 config blob retrieved size", verification)
+        self.assertIn("pulled_config_digest", verification)
+        self.assertIn("$GHCR_IMAGE@$EXPECTED_DIGEST", verification)
+        self.assertIn("$GHCR_IMAGE@$amd64_digest", verification)
         self.assertNotIn("docker login", verification)
 
     def test_old_destructive_retention_script_is_removed(self):

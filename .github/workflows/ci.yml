@@ -1065,59 +1065,6 @@ jobs:
           delete-untagged: true
           validate: true
 
-      - name: Verify retained tags and anonymous AMD64 image graph
-        if: >-
-          steps.current-main.outputs.current == 'true' &&
-          steps.image-inputs.outputs.changed == 'true' &&
-          github.event_name != 'workflow_dispatch'
-        env:
-          GHCR_IMAGE: ghcr.io/mosabbir-maruf/cloud-chrome-runtime
-          EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
-        run: |
-          set -euo pipefail
-          test -n "$EXPECTED_DIGEST"
-          sha_tag="sha-$GITHUB_SHA"
-          docker_config=$(mktemp -d "$RUNNER_TEMP/anonymous-docker-config.XXXXXX")
-          trap 'rm -rf "$docker_config"' EXIT
-          export DOCKER_CONFIG="$docker_config"
-          docker context inspect >/dev/null
-
-          docker buildx imagetools inspect --raw "$GHCR_IMAGE:latest" > "$RUNNER_TEMP/retained-latest.json"
-          docker buildx imagetools inspect --raw "$GHCR_IMAGE:$sha_tag" > "$RUNNER_TEMP/retained-sha.json"
-          latest_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-latest.json" | awk '{print $1}')"
-          sha_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-sha.json" | awk '{print $1}')"
-          [ "$latest_digest" = "$EXPECTED_DIGEST" ] && [ "$sha_digest" = "$EXPECTED_DIGEST" ] || {
-            echo "Retained tags do not resolve to the expected published digest." >&2
-            exit 1
-          }
-          jq -e '
-            .schemaVersion == 2 and
-            ((.mediaType == "application/vnd.oci.image.index.v1+json" or
-              .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
-             ([.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length == 1))
-          ' "$RUNNER_TEMP/retained-latest.json" >/dev/null || {
-            echo "Retained latest manifest is not the expected single-level index with one linux/amd64 descriptor." >&2
-            exit 1
-          }
-          amd64_digest=$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' "$RUNNER_TEMP/retained-latest.json")
-          [[ "$amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-            echo "Invalid linux/amd64 child digest." >&2
-            exit 1
-          }
-          docker pull --platform linux/amd64 "$GHCR_IMAGE:latest"
-          docker image inspect "$GHCR_IMAGE:latest" --format '{{.Os}}/{{.Architecture}}' | grep -Fx 'linux/amd64'
-          image_id=$(docker image inspect "$GHCR_IMAGE:latest" --format '{{.Id}}')
-          child_config_digest="sha256:${image_id#sha256:}"
-          docker buildx imagetools inspect --raw "$GHCR_IMAGE@$amd64_digest" > "$RUNNER_TEMP/retained-amd64.json"
-          [ "sha256:$(sha256sum "$RUNNER_TEMP/retained-amd64.json" | awk '{print $1}')" = "$amd64_digest" ] || {
-            echo "The linux/amd64 child manifest is not retrievable by its descriptor digest." >&2
-            exit 1
-          }
-          jq -e --arg config "$child_config_digest" '.config.digest == $config' "$RUNNER_TEMP/retained-amd64.json" >/dev/null || {
-            echo "The anonymously pulled AMD64 image does not match the retained index child manifest." >&2
-            exit 1
-          }
-
       - name: Confirm package retention action succeeded
         if: >-
           steps.current-main.outputs.current == 'true' &&
@@ -1157,7 +1104,10 @@ jobs:
           EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
         run: |
           set -euo pipefail
-          test -n "$EXPECTED_DIGEST"
+          [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Invalid or missing published index digest: '$EXPECTED_DIGEST'." >&2
+            exit 1
+          }
           sha_tag="sha-$GITHUB_SHA"
           docker_config=$(mktemp -d "$RUNNER_TEMP/anonymous-docker-config.XXXXXX")
           trap 'rm -rf "$docker_config"' EXIT
@@ -1166,10 +1116,17 @@ jobs:
 
           docker buildx imagetools inspect --raw "$GHCR_IMAGE:latest" > "$RUNNER_TEMP/retained-latest.json"
           docker buildx imagetools inspect --raw "$GHCR_IMAGE:$sha_tag" > "$RUNNER_TEMP/retained-sha.json"
-          latest_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-latest.json" | awk '{print $1}')"
-          sha_digest="sha256:$(sha256sum "$RUNNER_TEMP/retained-sha.json" | awk '{print $1}')"
-          [ "$latest_digest" = "$EXPECTED_DIGEST" ] && [ "$sha_digest" = "$EXPECTED_DIGEST" ] || {
-            echo "Retained tags do not resolve to the expected published digest." >&2
+          latest_digest=$(sha256sum "$RUNNER_TEMP/retained-latest.json" | awk '{print "sha256:" $1}')
+          sha_digest=$(sha256sum "$RUNNER_TEMP/retained-sha.json" | awk '{print "sha256:" $1}')
+          echo "Expected published index digest: $EXPECTED_DIGEST"
+          echo "latest raw manifest digest:       $latest_digest"
+          echo "$sha_tag raw manifest digest: $sha_digest"
+          [ "$latest_digest" = "$EXPECTED_DIGEST" ] || {
+            echo "latest manifest digest mismatch: expected $EXPECTED_DIGEST, got $latest_digest." >&2
+            exit 1
+          }
+          [ "$sha_digest" = "$EXPECTED_DIGEST" ] || {
+            echo "$sha_tag manifest digest mismatch: expected $EXPECTED_DIGEST, got $sha_digest." >&2
             exit 1
           }
           jq -e '
@@ -1181,22 +1138,89 @@ jobs:
             echo "Retained latest manifest is not the expected single-level index with one linux/amd64 descriptor." >&2
             exit 1
           }
-          amd64_digest=$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' "$RUNNER_TEMP/retained-latest.json")
+          amd64_descriptor=$(jq -c '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0]' "$RUNNER_TEMP/retained-latest.json")
+          amd64_digest=$(jq -r '.digest' <<<"$amd64_descriptor")
+          amd64_descriptor_media_type=$(jq -r '.mediaType' <<<"$amd64_descriptor")
           [[ "$amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-            echo "Invalid linux/amd64 child digest." >&2
+            echo "Invalid linux/amd64 descriptor digest: '$amd64_digest'." >&2
             exit 1
           }
-          docker pull --platform linux/amd64 "$GHCR_IMAGE:latest"
-          docker image inspect "$GHCR_IMAGE:latest" --format '{{.Os}}/{{.Architecture}}' | grep -Fx 'linux/amd64'
-          image_id=$(docker image inspect "$GHCR_IMAGE:latest" --format '{{.Id}}')
-          child_config_digest="sha256:${image_id#sha256:}"
+          echo "AMD64 descriptor digest: $amd64_digest"
+          echo "AMD64 descriptor mediaType: $amd64_descriptor_media_type"
+          [[ "$amd64_descriptor_media_type" == application/vnd.oci.image.manifest.v1+json ||
+             "$amd64_descriptor_media_type" == application/vnd.docker.distribution.manifest.v2+json ]] || {
+            echo "AMD64 descriptor is not a direct image manifest: $amd64_descriptor_media_type" >&2
+            exit 1
+          }
+
           docker buildx imagetools inspect --raw "$GHCR_IMAGE@$amd64_digest" > "$RUNNER_TEMP/retained-amd64.json"
-          [ "sha256:$(sha256sum "$RUNNER_TEMP/retained-amd64.json" | awk '{print $1}')" = "$amd64_digest" ] || {
-            echo "The linux/amd64 child manifest is not retrievable by its descriptor digest." >&2
+          child_manifest_digest=$(sha256sum "$RUNNER_TEMP/retained-amd64.json" | awk '{print "sha256:" $1}')
+          child_manifest_media_type=$(jq -r '.mediaType // ""' "$RUNNER_TEMP/retained-amd64.json")
+          child_config_digest=$(jq -r '.config.digest // ""' "$RUNNER_TEMP/retained-amd64.json")
+          child_config_size=$(jq -r '.config.size // empty' "$RUNNER_TEMP/retained-amd64.json")
+          echo "AMD64 child manifest digest: $child_manifest_digest"
+          echo "AMD64 child manifest mediaType: $child_manifest_media_type"
+          echo "AMD64 child config.digest: $child_config_digest"
+          [ "$child_manifest_digest" = "$amd64_digest" ] || {
+            echo "AMD64 child body digest mismatch: descriptor $amd64_digest, retrieved body $child_manifest_digest." >&2
             exit 1
           }
-          jq -e --arg config "$child_config_digest" '.config.digest == $config' "$RUNNER_TEMP/retained-amd64.json" >/dev/null || {
-            echo "The anonymously pulled AMD64 image does not match the retained index child manifest." >&2
+          [ "$child_manifest_media_type" = "$amd64_descriptor_media_type" ] || {
+            echo "AMD64 mediaType mismatch: descriptor $amd64_descriptor_media_type, child $child_manifest_media_type." >&2
+            exit 1
+          }
+          [ "$child_manifest_media_type" != application/vnd.oci.image.index.v1+json ] &&
+          [ "$child_manifest_media_type" != application/vnd.docker.distribution.manifest.list.v2+json ] || {
+            echo "AMD64 descriptor unexpectedly points to a nested index." >&2
+            exit 1
+          }
+          [[ "$child_config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "AMD64 child manifest has an invalid config digest: '$child_config_digest'." >&2
+            exit 1
+          }
+          [[ "$child_config_size" =~ ^[0-9]+$ ]] || {
+            echo "AMD64 child manifest has an invalid config size: '$child_config_size'." >&2
+            exit 1
+          }
+
+          docker pull --platform linux/amd64 "$GHCR_IMAGE:latest"
+          tag_image_id=$(docker image inspect "$GHCR_IMAGE:latest" --format '{{.Id}}')
+          tag_image_platform=$(docker image inspect "$GHCR_IMAGE:latest" --format '{{.Os}}/{{.Architecture}}')
+          tag_repo_digests=$(docker image inspect "$GHCR_IMAGE:latest" --format '{{json .RepoDigests}}')
+          echo "Tag pull image ID: $tag_image_id"
+          echo "Tag pull platform: $tag_image_platform"
+          echo "Tag pull RepoDigests: $tag_repo_digests"
+          [ "$tag_image_platform" = linux/amd64 ] || {
+            echo "Tag pull platform mismatch: expected linux/amd64, got $tag_image_platform." >&2
+            exit 1
+          }
+          [[ ",$tag_repo_digests," == *",$GHCR_IMAGE@$EXPECTED_DIGEST,"* ]] || {
+            echo "Tag pull RepoDigests do not contain expected index $EXPECTED_DIGEST: $tag_repo_digests." >&2
+            exit 1
+          }
+
+          docker pull --platform linux/amd64 "$GHCR_IMAGE@$amd64_digest"
+          direct_image_id=$(docker image inspect "$GHCR_IMAGE@$amd64_digest" --format '{{.Id}}')
+          direct_image_platform=$(docker image inspect "$GHCR_IMAGE@$amd64_digest" --format '{{.Os}}/{{.Architecture}}')
+          direct_repo_digests=$(docker image inspect "$GHCR_IMAGE@$amd64_digest" --format '{{json .RepoDigests}}')
+          echo "Direct child pull image ID: $direct_image_id"
+          echo "Direct child pull platform: $direct_image_platform"
+          echo "Direct child pull RepoDigests: $direct_repo_digests"
+          [ "$direct_image_platform" = linux/amd64 ] || {
+            echo "Direct child pull platform mismatch: expected linux/amd64, got $direct_image_platform." >&2
+            exit 1
+          }
+          [[ ",$direct_repo_digests," == *",$GHCR_IMAGE@$amd64_digest,"* ]] || {
+            echo "Direct child RepoDigests do not contain expected manifest $amd64_digest: $direct_repo_digests." >&2
+            exit 1
+          }
+          docker buildx imagetools inspect --raw "$GHCR_IMAGE@$child_config_digest" > "$RUNNER_TEMP/retained-amd64-config.json"
+          pulled_config_digest=$(sha256sum "$RUNNER_TEMP/retained-amd64-config.json" | awk '{print "sha256:" $1}')
+          pulled_config_size=$(wc -c < "$RUNNER_TEMP/retained-amd64-config.json" | tr -d ' ')
+          echo "AMD64 config blob retrieved digest: $pulled_config_digest"
+          echo "AMD64 config blob retrieved size: $pulled_config_size"
+          [ "$pulled_config_digest" = "$child_config_digest" ] && [ "$pulled_config_size" = "$child_config_size" ] || {
+            echo "AMD64 config blob mismatch: expected digest $child_config_digest size $child_config_size; got digest $pulled_config_digest size $pulled_config_size." >&2
             exit 1
           }
 
